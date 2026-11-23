@@ -32,27 +32,54 @@ jobs:
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           fi
 
-      - name: Prepare persistent debug keystore (enables in-place updates without uninstalling)
+      - name: Prepare persistent signing keystore (Release APK for Firebase App Check reCAPTCHA on real phones)
+        id: keystore
         env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
-            printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '\n\r ' | base64 -d > debug.keystore
-            echo "Restored persistent debug.keystore from GitHub Secrets."
-          elif [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
-            echo "Restored debug.keystore from repository."
-          elif [ ! -f debug.keystore ]; then
-            echo "::warning::Generating ephemeral debug.keystore. Add DEBUG_KEYSTORE_BASE64 secret so future APKs update in-place without uninstalling."
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\n\r ' | base64 -d > my-upload-key.jks
+            echo "store_password=${RELEASE_STORE_PASSWORD:-android}" >> "$GITHUB_OUTPUT"
+            echo "key_password=${RELEASE_KEY_PASSWORD:-android}" >> "$GITHUB_OUTPUT"
+            echo "Restored release keystore from RELEASE_KEYSTORE_BASE64 secret."
+          else
+            if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+              printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '\n\r ' | base64 -d > debug.keystore
+              echo "Restored persistent debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
+            elif [ -f debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+              echo "Restored persistent debug.keystore from repository."
+            elif [ ! -f debug.keystore ]; then
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+
+            # Re-alias the exact same Firebase-registered certificate to "upload" for assembleRelease
+            # This preserves the SHA-1/SHA-256 fingerprint AND lets Android update in-place without uninstalling!
+            rm -f my-upload-key.jks
+            keytool -importkeystore \
+              -srckeystore debug.keystore \
+              -srcstorepass android \
+              -srcalias androiddebugkey \
+              -srckeypass android \
+              -destkeystore my-upload-key.jks \
+              -deststorepass android \
+              -destalias upload \
+              -destkeypass android \
+              -noprompt
+            echo "store_password=android" >> "$GITHUB_OUTPUT"
+            echo "key_password=android" >> "$GITHUB_OUTPUT"
+            echo "Prepared my-upload-key.jks with persistent certificate for Release APK."
           fi
 
       - name: Restore Firebase config (google-services.json)
@@ -82,10 +109,14 @@ jobs:
           echo "version_name=${V_NAME:-1.0}" >> "$GITHUB_OUTPUT"
           echo "commit_msg=${COMMIT_MSG}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Debug APK with embedded GitHub update repository
+      - name: Build Release APK (enables real-device Firebase App Check reCAPTCHA + auto-update repo)
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ steps.keystore.outputs.store_password }}
+          KEY_PASSWORD: ${{ steps.keystore.outputs.key_password }}
         run: |
-          gradle :app:assembleDebug --no-daemon -PENCAN_GITHUB_REPO="${{ github.repository }}"
-          cp app/build/outputs/apk/debug/app-debug.apk EncanLive.apk
+          gradle :app:assembleRelease --no-daemon -PENCAN_GITHUB_REPO="${{ github.repository }}"
+          cp app/build/outputs/apk/release/app-release.apk EncanLive.apk
 
       - name: Generate version.json for in-app update notifications
         run: |
