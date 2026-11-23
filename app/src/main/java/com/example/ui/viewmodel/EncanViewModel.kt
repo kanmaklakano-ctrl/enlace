@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.ai.AuctionAiAnalyst
 import com.example.data.ai.AuctionDetailScraper
 import com.example.data.ai.AuctionStudyUiState
+import com.google.firebase.FirebaseApp
 import com.example.data.local.EncanDatabase
 import com.example.data.local.PreferencesRepository
 import com.example.data.network.BilingualQueryTranslator
@@ -394,6 +395,21 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
                         "Analyse IA du prix, des frais/taxes et du marché canadien…"
                 }
                 _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(stageMsg)) }
+
+                val appContext = getApplication<Application>()
+                val firebaseApp = FirebaseApp.getApps(appContext).firstOrNull()
+                    ?: FirebaseApp.initializeApp(appContext)
+                if (firebaseApp == null) {
+                    Log.e("EncanViewModel", "FirebaseApp not initialized — google-services.json missing in APK.")
+                    _studyStates.update {
+                        it + (
+                            lot.id to AuctionStudyUiState.Error(
+                                "Configuration Firebase manquante dans cet APK (fichier app/google-services.json absent lors de la compilation sur GitHub). Ajoutez le secret GOOGLE_SERVICES_JSON dans GitHub Actions (ou app/google-services.json dans le dépôt) puis recompilez l'APK."
+                            )
+                        )
+                    }
+                    return@launch
+                }
 
                 val report = aiAnalyst.analyzeLot(
                     lot = lot,

@@ -16,7 +16,7 @@ object AuctionDetailScraper {
 
     private val vinRegex = Regex("""\b([A-HJ-NPR-Z0-9]{17})\b""")
     private val mileageRegex = Regex(
-        """(?i)(?:odometer|mileage|kilom[èe]trage|km|miles?)[:\s-]*([0-9]{1,3}(?:[,\s][0-9]{3})+|[0-9]{4,7})\s*(km|kms|kilometers|kilometres|mi|miles)?|\b([0-9]{1,3}(?:[,\s][0-9]{3})+)\s*(km|kms|mi|miles)\b"""
+        """(?i)(?:odometer|mileage|kilom[èe]trage|km|miles?)[:\s-]*([0-9]{1,3}(?:[,\s][0-9]{3})+|[0-9]{4,7})\s*(km|kms|kilometers|kilometres|mi|miles)?|\b([0-9]{1,3}(?:[,\s][0-9]{3})+|[0-9]{4,6})\s*(km|kms|mi|miles)\b"""
     )
     private val retailRegex = Regex(
         """(?i)(?:msrp|retail(?:\s+price|\s+value)?|valeur\s+au\s+d[ée]tail|prix\s+d[ée]tail|regular\s+price)[:\s]*\$?\s*([0-9][0-9,]*(?:\.[0-9]{2})?)"""
