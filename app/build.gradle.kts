@@ -16,8 +16,14 @@ android {
     applicationId = "com.aistudio.encanlive.qxmkvr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "1.5"
+    versionCode = 10
+    versionName = "1.6"
+
+    val githubUpdateRepo = (project.findProperty("ENCAN_GITHUB_REPO") as String?)
+      ?.trim()
+      ?.replace("\"", "")
+      .orEmpty()
+    buildConfigField("String", "GITHUB_UPDATE_REPO", "\"$githubUpdateRepo\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

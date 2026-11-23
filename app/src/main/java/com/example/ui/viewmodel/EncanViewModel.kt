@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.data.ai.AuctionAiAnalyst
 import com.example.data.ai.AuctionDetailScraper
 import com.example.data.ai.AuctionStudyUiState
@@ -11,6 +12,8 @@ import com.example.data.ai.CanadianVinLookupService
 import com.example.data.ai.CarfaxRenderRequest
 import com.example.data.ai.CarfaxReportReader
 import com.example.data.ai.ScrapedLotEvidence
+import com.example.data.update.AppUpdateChecker
+import com.example.data.update.AppUpdateStatus
 import com.google.firebase.FirebaseApp
 import com.example.data.local.EncanDatabase
 import com.example.data.local.PreferencesRepository
@@ -82,6 +85,12 @@ data class CalculatorUiState(
         )
 }
 
+data class AppUpdateUiState(
+    val status: AppUpdateStatus = AppUpdateStatus.Idle,
+    val configuredRepo: String = BuildConfig.GITHUB_UPDATE_REPO,
+    val showDialog: Boolean = false
+)
+
 class EncanViewModel(application: Application) : AndroidViewModel(application) {
     private val database = EncanDatabase.getInstance(application)
     private val preferences = PreferencesRepository(application)
@@ -112,6 +121,11 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _calculatorState = MutableStateFlow(CalculatorUiState())
     val calculatorState: StateFlow<CalculatorUiState> = _calculatorState.asStateFlow()
+
+    private val _appUpdateState = MutableStateFlow(
+        AppUpdateUiState(configuredRepo = AppUpdateChecker.normalizeRepoSlug(BuildConfig.GITHUB_UPDATE_REPO))
+    )
+    val appUpdateState: StateFlow<AppUpdateUiState> = _appUpdateState.asStateFlow()
 
     val favorites: StateFlow<List<FavoriteLotItem>> = repository.favorites
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -260,6 +274,57 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
             }
             refreshLiveAuctions()
         }
+        viewModelScope.launch {
+            val savedRepo = AppUpdateChecker.normalizeRepoSlug(preferences.githubUpdateRepo.first())
+            val embeddedRepo = AppUpdateChecker.normalizeRepoSlug(BuildConfig.GITHUB_UPDATE_REPO)
+            val activeRepo = savedRepo.ifBlank { embeddedRepo }
+            _appUpdateState.update { it.copy(configuredRepo = activeRepo) }
+            if (activeRepo.isNotBlank()) {
+                checkForAppUpdates(silent = true)
+            }
+        }
+    }
+
+    fun checkForAppUpdates(silent: Boolean = false) {
+        val repo = _appUpdateState.value.configuredRepo
+        if (repo.isBlank()) {
+            if (!silent) {
+                _appUpdateState.update { it.copy(status = AppUpdateStatus.NotConfigured) }
+            }
+            return
+        }
+        viewModelScope.launch {
+            if (!silent) {
+                _appUpdateState.update { it.copy(status = AppUpdateStatus.Checking) }
+            }
+            val result = withTimeoutOrNull(8_000L) {
+                AppUpdateChecker.checkForUpdate(repoSlugRaw = repo)
+            } ?: AppUpdateStatus.Error("Délai dépassé lors de la vérification GitHub.")
+
+            _appUpdateState.update { current ->
+                current.copy(
+                    status = if (silent && result is AppUpdateStatus.Error) current.status else result,
+                    showDialog = result is AppUpdateStatus.UpdateAvailable
+                )
+            }
+        }
+    }
+
+    fun saveGithubUpdateRepo(rawInput: String) {
+        val normalized = AppUpdateChecker.normalizeRepoSlug(rawInput)
+        if (normalized.isBlank()) {
+            _snackbarMessage.value = "Format invalide. Exemple : utilisateur/EncanLive"
+            return
+        }
+        viewModelScope.launch {
+            preferences.setGithubUpdateRepo(normalized)
+            _appUpdateState.update { it.copy(configuredRepo = normalized) }
+            checkForAppUpdates(silent = false)
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        _appUpdateState.update { it.copy(showDialog = false) }
     }
 
     fun onQueryChange(newQuery: String) {

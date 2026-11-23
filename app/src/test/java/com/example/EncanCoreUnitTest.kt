@@ -131,4 +131,37 @@ class EncanCoreUnitTest {
         assertEquals(2, report.pros.size)
         assertTrue(report.scrapedOfficialPage)
     }
+
+    @Test
+    fun appUpdateCheckerParsesVersionJsonAndDetectsNewerBuild() {
+        assertEquals(
+            "kanmaklakano/EncanLive",
+            com.example.data.update.AppUpdateChecker.normalizeRepoSlug("https://github.com/kanmaklakano/EncanLive/releases")
+        )
+        assertEquals(
+            "kanmaklakano/EncanLive",
+            com.example.data.update.AppUpdateChecker.normalizeRepoSlug("kanmaklakano/EncanLive")
+        )
+
+        val versionJson = """
+            {
+              "versionCode": 12,
+              "versionName": "1.8",
+              "publishedAt": "2026-11-23T15:00:00Z",
+              "releaseNotes": "Nouvelle version avec améliorations IA",
+              "releasePageUrl": "https://github.com/kanmaklakano/EncanLive/releases/tag/latest-apk",
+              "downloadUrl": "https://github.com/kanmaklakano/EncanLive/releases/download/latest-apk/EncanLive.apk"
+            }
+        """.trimIndent()
+        val parsed = com.example.data.update.AppUpdateChecker.parseVersionJson(versionJson, "kanmaklakano/EncanLive")
+        assertNotNull(parsed)
+        assertEquals(12, parsed!!.versionCode)
+        assertEquals("1.8", parsed.versionName)
+
+        val newer = com.example.data.update.AppUpdateChecker.evaluateUpdate(parsed, installedVersionCode = 10, installedVersionName = "1.6")
+        assertTrue(newer is com.example.data.update.AppUpdateStatus.UpdateAvailable)
+
+        val upToDate = com.example.data.update.AppUpdateChecker.evaluateUpdate(parsed, installedVersionCode = 12, installedVersionName = "1.8")
+        assertTrue(upToDate is com.example.data.update.AppUpdateStatus.UpToDate)
+    }
 }

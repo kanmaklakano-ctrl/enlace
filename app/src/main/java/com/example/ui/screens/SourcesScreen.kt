@@ -47,10 +47,12 @@ import com.example.model.AuctionSourceId
 import com.example.model.CanadianProvince
 import com.example.model.ConnectorState
 import com.example.model.SourceFetchStatus
+import com.example.ui.components.AppUpdateCard
 import com.example.ui.components.BrowserLauncher
 import com.example.ui.theme.BurnishedBrassBright
 import com.example.ui.theme.LiveEmerald
 import com.example.ui.theme.MonoFontFamily
+import com.example.ui.viewmodel.AppUpdateUiState
 
 @Composable
 fun SourcesScreen(
@@ -59,9 +61,12 @@ fun SourcesScreen(
     sourceStatuses: List<SourceFetchStatus>,
     enabledSources: Set<AuctionSourceId>,
     isRefreshing: Boolean,
+    appUpdateState: AppUpdateUiState,
     onToggleSource: (AuctionSourceId, Boolean) -> Unit,
     onEnableAll: () -> Unit,
     onRefreshConnections: () -> Unit,
+    onCheckUpdatesNow: () -> Unit,
+    onSaveUpdateRepo: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -220,6 +225,16 @@ fun SourcesScreen(
                     }
                 }
             }
+        }
+
+        item(key = "app_update_card_item") {
+            AppUpdateCard(
+                status = appUpdateState.status,
+                configuredRepo = appUpdateState.configuredRepo,
+                onSaveRepoAndCheck = onSaveUpdateRepo,
+                onCheckNow = onCheckUpdatesNow,
+                onOpenUrl = { url -> BrowserLauncher.openAuctionUrl(context, url) }
+            )
         }
 
         item(key = "independent_disclaimer") {

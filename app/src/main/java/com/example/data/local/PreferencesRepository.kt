@@ -18,6 +18,7 @@ class PreferencesRepository(private val context: Context) {
         val SELECTED_PROVINCE = stringPreferencesKey("selected_province")
         val ENABLED_SOURCES = stringSetPreferencesKey("enabled_sources")
         val SOURCES_SCHEMA_VERSION = intPreferencesKey("sources_schema_version")
+        val GITHUB_UPDATE_REPO = stringPreferencesKey("github_update_repo")
     }
 
     companion object {
@@ -48,6 +49,10 @@ class PreferencesRepository(private val context: Context) {
         }
     }
 
+    val githubUpdateRepo: Flow<String> = context.encanDataStore.data.map { prefs ->
+        prefs[Keys.GITHUB_UPDATE_REPO].orEmpty()
+    }
+
     suspend fun setSelectedProvince(province: CanadianProvince) {
         context.encanDataStore.edit { prefs ->
             prefs[Keys.SELECTED_PROVINCE] = province.code
@@ -71,6 +76,12 @@ class PreferencesRepository(private val context: Context) {
         context.encanDataStore.edit { prefs ->
             prefs[Keys.ENABLED_SOURCES] = AuctionSourceId.entries.map { it.name }.toSet()
             prefs[Keys.SOURCES_SCHEMA_VERSION] = CURRENT_SOURCES_SCHEMA
+        }
+    }
+
+    suspend fun setGithubUpdateRepo(repoSlug: String) {
+        context.encanDataStore.edit { prefs ->
+            prefs[Keys.GITHUB_UPDATE_REPO] = repoSlug.trim()
         }
     }
 }

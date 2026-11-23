@@ -44,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -54,6 +55,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.data.update.AppUpdateStatus
+import com.example.ui.components.AppUpdateDialog
+import com.example.ui.components.BrowserLauncher
 import com.example.ui.components.HiddenAttachedCarfaxWebView
 import com.example.ui.screens.AuctionDetailScreen
 import com.example.ui.screens.CalculatorScreen
@@ -131,6 +135,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
+    val context = LocalContext.current
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -141,6 +146,7 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
     val selectedFavoriteItem by viewModel.selectedFavoriteItem.collectAsStateWithLifecycle()
     val selectedLotStudyState by viewModel.selectedLotStudyState.collectAsStateWithLifecycle()
     val activeCarfaxRender by viewModel.activeCarfaxRender.collectAsStateWithLifecycle()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     val calculatorState by viewModel.calculatorState.collectAsStateWithLifecycle()
 
     LaunchedEffect(exploreState.snackbarMessage) {
@@ -304,9 +310,12 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                                 sourceStatuses = exploreState.sourceStatuses,
                                 enabledSources = exploreState.enabledSources,
                                 isRefreshing = exploreState.isRefreshing,
+                                appUpdateState = appUpdateState,
                                 onToggleSource = viewModel::toggleSourceEnabled,
                                 onEnableAll = viewModel::enableAllSources,
-                                onRefreshConnections = viewModel::refreshLiveAuctions
+                                onRefreshConnections = viewModel::refreshLiveAuctions,
+                                onCheckUpdatesNow = { viewModel.checkForAppUpdates(silent = false) },
+                                onSaveUpdateRepo = viewModel::saveGithubUpdateRepo
                             )
                         }
 
@@ -343,6 +352,22 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                     }
                 }
             }
+        }
+
+        val availableUpdate = appUpdateState.status as? AppUpdateStatus.UpdateAvailable
+        if (appUpdateState.showDialog && availableUpdate != null) {
+            AppUpdateDialog(
+                updateInfo = availableUpdate.info,
+                onInstallUpdate = { downloadUrl ->
+                    viewModel.dismissUpdateDialog()
+                    BrowserLauncher.openAuctionUrl(context, downloadUrl)
+                },
+                onOpenReleasePage = { releaseUrl ->
+                    viewModel.dismissUpdateDialog()
+                    BrowserLauncher.openAuctionUrl(context, releaseUrl)
+                },
+                onDismiss = viewModel::dismissUpdateDialog
+            )
         }
     }
 }
