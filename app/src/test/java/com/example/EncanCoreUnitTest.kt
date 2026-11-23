@@ -13,7 +13,12 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class EncanCoreUnitTest {
     @Test
     fun bilingualTranslationMapsFrenchAuctionTermsToEnglish() {
@@ -80,5 +85,50 @@ class EncanCoreUnitTest {
         assertEquals(1100.0, alberta.subtotal, 0.01)
         assertEquals(55.0, alberta.taxAmount, 0.01)
         assertEquals(1155.0, alberta.totalCost, 0.01)
+    }
+
+    @Test
+    fun auctionDetailScraperExtractsVinMileageAndCarfaxUrl() {
+        val sample = """
+            2021 Toyota RAV4 XLE AWD - VIN: 2T3R1RFV5MC184291
+            Odometer: 84,520 km | Retail: $29,900
+            Full CARFAX report: https://vhr.carfax.ca/?id=abc123XYZ
+        """.trimIndent()
+
+        assertEquals("2T3R1RFV5MC184291", com.example.data.ai.AuctionDetailScraper.extractVin(sample))
+        assertEquals("84,520 km", com.example.data.ai.AuctionDetailScraper.extractMileage(sample))
+        assertEquals("https://vhr.carfax.ca/?id=abc123XYZ", com.example.data.ai.AuctionDetailScraper.extractCarfaxUrlFromRawText(sample))
+    }
+
+    @Test
+    fun aiAnalystParsesStructuredJsonDirectly() {
+        val json = """
+            {
+              "verdict": "BON_DEAL",
+              "dealScore": 82,
+              "headline": "Bonne affaire sous la valeur marchande canadienne",
+              "estimatedMarketValueCad": "750 $ – 900 $ CAD",
+              "recommendedMaxBidCad": "540 $ CAD",
+              "estimatedProfitOrSavings": "~220 $ CAD d'économie",
+              "priceAnalysis": "Le coût total avec frais et TVH reste nettement sous Kijiji.",
+              "conditionSummary": "Appareil déverrouillé en bon état apparent.",
+              "carfaxAnalysis": "",
+              "pros": ["Prix bien sous le marché", "Déverrouillé"],
+              "redFlags": ["Vendu tel quel sans garantie"],
+              "verificationChecklist": ["Vérifier l'état de la batterie"]
+            }
+        """.trimIndent()
+
+        val report = com.example.data.ai.AuctionAiAnalyst.parseStudyReportJson(
+            lotId = "lot-42",
+            jsonText = json,
+            evidence = com.example.data.ai.ScrapedLotEvidence(scrapedSuccessfully = true)
+        )
+
+        assertEquals(com.example.data.ai.DealVerdict.BON_DEAL, report.verdict)
+        assertEquals(82, report.dealScore)
+        assertEquals("540 $ CAD", report.recommendedMaxBidCad)
+        assertEquals(2, report.pros.size)
+        assertTrue(report.scrapedOfficialPage)
     }
 }

@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.ContentCopy
@@ -66,10 +67,12 @@ import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.example.R
+import com.example.data.ai.AuctionStudyUiState
 import com.example.model.AuctionLot
 import com.example.model.CostBreakdown
 import com.example.model.FavoriteLotItem
 import com.example.ui.components.AuctionPhotoPlaceholder
+import com.example.ui.components.AuctionStudyCard
 import com.example.ui.components.BrowserLauncher
 import com.example.ui.components.FormatUtils
 import com.example.ui.theme.LiveEmerald
@@ -80,7 +83,9 @@ import kotlinx.coroutines.delay
 fun AuctionDetailScreen(
     lot: AuctionLot?,
     favoriteItem: FavoriteLotItem?,
+    studyState: AuctionStudyUiState,
     onBack: () -> Unit,
+    onStudyLot: (AuctionLot, Boolean) -> Unit,
     onToggleFavorite: (AuctionLot) -> Unit,
     onSaveFavoriteNotes: (lotId: String, maxBid: String, note: String) -> Unit,
     onOpenInCalculator: (AuctionLot) -> Unit,
@@ -345,6 +350,17 @@ fun AuctionDetailScreen(
                 }
             }
 
+            // AI Auction Analyst & CARFAX Study Card
+            item(key = "detail_ai_study") {
+                AuctionStudyCard(
+                    studyState = studyState,
+                    onStartStudy = { onStudyLot(lot, false) },
+                    onRefreshStudy = { onStudyLot(lot, true) },
+                    onOpenUrl = { url -> BrowserLauncher.openAuctionUrl(context, url) },
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+
             // Metadata & Description Card
             item(key = "detail_info") {
                 Card(
@@ -559,6 +575,29 @@ fun AuctionDetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                OutlinedButton(
+                    onClick = { onStudyLot(lot, studyState is AuctionStudyUiState.Error) },
+                    enabled = studyState !is AuctionStudyUiState.Loading,
+                    modifier = Modifier
+                        .height(52.dp)
+                        .testTag("detail_bottom_study_cta"),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.25.dp, MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AutoAwesome,
+                        contentDescription = stringResource(R.string.cd_study_auction),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(R.string.study_auction),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
                 Button(
                     onClick = { BrowserLauncher.openAuctionUrl(context, lot.auctionUrl) },
                     modifier = Modifier
@@ -575,7 +614,8 @@ fun AuctionDetailScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = stringResource(R.string.open_official_auction),
-                        style = MaterialTheme.typography.titleSmall
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))

@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import coil.Coil
 import coil.ImageLoader
+import com.example.data.ai.configureAppCheck
 import com.example.data.network.AuctionHttpClient
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -109,6 +110,8 @@ private val TopLevelDestinations = listOf(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configure Firebase App Check with launch intent before any UI, ViewModels, or Firebase calls
+        configureAppCheck(this, intent)
         Coil.setImageLoader {
             ImageLoader.Builder(applicationContext)
                 .okHttpClient(AuctionHttpClient.imageClient)
@@ -135,6 +138,7 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
     val savedSearches by viewModel.savedSearches.collectAsStateWithLifecycle()
     val selectedLot by viewModel.selectedLot.collectAsStateWithLifecycle()
     val selectedFavoriteItem by viewModel.selectedFavoriteItem.collectAsStateWithLifecycle()
+    val selectedLotStudyState by viewModel.selectedLotStudyState.collectAsStateWithLifecycle()
     val calculatorState by viewModel.calculatorState.collectAsStateWithLifecycle()
 
     LaunchedEffect(exploreState.snackbarMessage) {
@@ -255,6 +259,11 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                                     viewModel.openLotDetail(lot.id)
                                     navController.navigate(ROUTE_DETAIL)
                                 },
+                                onStudyLotClick = { lot ->
+                                    viewModel.openLotDetail(lot.id)
+                                    viewModel.studyAuction(lot)
+                                    navController.navigate(ROUTE_DETAIL)
+                                },
                                 onFavoriteToggle = viewModel::toggleFavorite,
                                 onOpenSourcesTab = { navigateTopLevel(ROUTE_SOURCES) }
                             )
@@ -266,6 +275,11 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                                 savedSearches = savedSearches,
                                 onLotClick = { lot ->
                                     viewModel.openLotDetail(lot.id)
+                                    navController.navigate(ROUTE_DETAIL)
+                                },
+                                onStudyLotClick = { lot ->
+                                    viewModel.openLotDetail(lot.id)
+                                    viewModel.studyAuction(lot)
                                     navController.navigate(ROUTE_DETAIL)
                                 },
                                 onRemoveFavorite = viewModel::toggleFavorite,
@@ -305,7 +319,11 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                             AuctionDetailScreen(
                                 lot = selectedLot,
                                 favoriteItem = selectedFavoriteItem,
+                                studyState = selectedLotStudyState,
                                 onBack = { navController.popBackStack() },
+                                onStudyLot = { lot, forceRefresh ->
+                                    viewModel.studyAuction(lot, forceRefresh = forceRefresh)
+                                },
                                 onToggleFavorite = viewModel::toggleFavorite,
                                 onSaveFavoriteNotes = viewModel::updateFavoriteNotes,
                                 onOpenInCalculator = { lot ->

@@ -62,6 +62,7 @@ fun FavoritesScreen(
     favorites: List<FavoriteLotItem>,
     savedSearches: List<SavedSearch>,
     onLotClick: (AuctionLot) -> Unit,
+    onStudyLotClick: (AuctionLot) -> Unit,
     onRemoveFavorite: (AuctionLot) -> Unit,
     onApplySavedSearch: (SavedSearch) -> Unit,
     onDeleteSavedSearch: (Long) -> Unit,
@@ -127,6 +128,7 @@ fun FavoritesScreen(
                                 lot = fav.lot,
                                 isFavorite = true,
                                 onCardClick = { onLotClick(fav.lot) },
+                                onStudyClick = { onStudyLotClick(fav.lot) },
                                 onFavoriteClick = { onRemoveFavorite(fav.lot) },
                                 onOpenUrlClick = { BrowserLauncher.openAuctionUrl(context, fav.lot.auctionUrl) }
                             )

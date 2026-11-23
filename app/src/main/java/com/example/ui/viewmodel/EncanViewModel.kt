@@ -1,8 +1,12 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.ai.AuctionAiAnalyst
+import com.example.data.ai.AuctionDetailScraper
+import com.example.data.ai.AuctionStudyUiState
 import com.example.data.local.EncanDatabase
 import com.example.data.local.PreferencesRepository
 import com.example.data.network.BilingualQueryTranslator
@@ -17,7 +21,10 @@ import com.example.model.FavoriteLotItem
 import com.example.model.SavedSearch
 import com.example.model.SortOrder
 import com.example.model.SourceFetchStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -72,6 +79,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
     private val database = EncanDatabase.getInstance(application)
     private val preferences = PreferencesRepository(application)
     private val repository = AuctionRepository(database.auctionDao(), preferences)
+    private val aiAnalyst = AuctionAiAnalyst()
 
     private val _query = MutableStateFlow("")
     private val _lastFetchedQuery = MutableStateFlow("")
@@ -90,6 +98,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
     )
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     private val _selectedLotId = MutableStateFlow<String?>(null)
+    private val _studyStates = MutableStateFlow<Map<String, AuctionStudyUiState>>(emptyMap())
 
     private val _calculatorState = MutableStateFlow(CalculatorUiState())
     val calculatorState: StateFlow<CalculatorUiState> = _calculatorState.asStateFlow()
@@ -222,7 +231,15 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
         if (id == null) null else favs.firstOrNull { it.lot.id == id }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val selectedLotStudyState: StateFlow<AuctionStudyUiState> = combine(
+        _selectedLotId,
+        _studyStates
+    ) { id, states ->
+        if (id == null) AuctionStudyUiState.Idle else states[id] ?: AuctionStudyUiState.Idle
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AuctionStudyUiState.Idle)
+
     private var activeSearchJob: Job? = null
+    private val activeStudyJobs = mutableMapOf<String, Job>()
 
     init {
         viewModelScope.launch {
@@ -348,6 +365,64 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openLotDetail(lotId: String) {
         _selectedLotId.value = lotId
+    }
+
+    fun studyAuction(lot: AuctionLot, forceRefresh: Boolean = false) {
+        val currentState = _studyStates.value[lot.id]
+        if (!forceRefresh && (currentState is AuctionStudyUiState.Success || currentState is AuctionStudyUiState.Loading)) {
+            return
+        }
+
+        activeStudyJobs[lot.id]?.cancel()
+        activeStudyJobs[lot.id] = viewModelScope.launch {
+            _studyStates.update {
+                it + (lot.id to AuctionStudyUiState.Loading("Lecture de la page officielle & recherche CARFAX / NIV…"))
+            }
+            try {
+                val evidenceDeferred = async { AuctionDetailScraper.scrapeLotEvidence(lot) }
+                val photoDeferred = async { AuctionDetailScraper.downloadLotBitmapIfSmall(lot.imageUrl) }
+
+                val evidence = evidenceDeferred.await()
+                val photoBitmap = photoDeferred.await()
+
+                val stageMsg = when {
+                    !evidence.carfaxUrl.isNullOrBlank() ->
+                        "Rapport CARFAX détecté — analyse du prix et de l'historique…"
+                    evidence.scrapedSuccessfully ->
+                        "Annonce officielle lue — comparaison avec le marché canadien…"
+                    else ->
+                        "Analyse IA du prix, des frais/taxes et du marché canadien…"
+                }
+                _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(stageMsg)) }
+
+                val report = aiAnalyst.analyzeLot(
+                    lot = lot,
+                    evidence = evidence,
+                    photoBitmap = photoBitmap
+                )
+                _studyStates.update { it + (lot.id to AuctionStudyUiState.Success(report)) }
+            } catch (e: TimeoutCancellationException) {
+                Log.e("EncanViewModel", "AI auction study timed out for ${lot.id}", e)
+                _studyStates.update {
+                    it + (
+                        lot.id to AuctionStudyUiState.Error(
+                            "L'analyse IA a dépassé le délai de 60 secondes. Vérifiez votre connexion et réessayez."
+                        )
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EncanViewModel", "AI auction study failed for ${lot.id}", e)
+                _studyStates.update {
+                    it + (
+                        lot.id to AuctionStudyUiState.Error(
+                            e.localizedMessage ?: "Erreur lors de l'analyse IA de cette enchère."
+                        )
+                    )
+                }
+            }
+        }
     }
 
     fun toggleFavorite(lot: AuctionLot) {

@@ -17,4 +17,8 @@
     <string name="cd_share">Partager l\'enchère</string>
     <string name="cd_refresh">Actualiser en direct</string>
     <string name="cd_open_external">Ouvrir le lien externe</string>
+    <string name="study_auction">Étudier</string>
+    <string name="study_auction_full">Étudier cette enchère (IA)</string>
+    <string name="cd_study_auction">Étudier cette enchère avec l\'agent IA</string>
+    <string name="open_carfax_report">Ouvrir le rapport CARFAX</string>
 </resources>

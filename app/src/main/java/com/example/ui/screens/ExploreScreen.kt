@@ -111,6 +111,7 @@ fun ExploreScreen(
     onRefresh: () -> Unit,
     onSaveSearch: () -> Unit,
     onLotClick: (AuctionLot) -> Unit,
+    onStudyLotClick: (AuctionLot) -> Unit,
     onFavoriteToggle: (AuctionLot) -> Unit,
     onOpenSourcesTab: () -> Unit,
     modifier: Modifier = Modifier
@@ -590,6 +591,7 @@ fun ExploreScreen(
                         lot = lot,
                         isFavorite = lot.id in uiState.favoriteIds,
                         onCardClick = { onLotClick(lot) },
+                        onStudyClick = { onStudyLotClick(lot) },
                         onFavoriteClick = { onFavoriteToggle(lot) },
                         onOpenUrlClick = { BrowserLauncher.openAuctionUrl(context, lot.auctionUrl) },
                         modifier = Modifier.padding(horizontal = 16.dp)
