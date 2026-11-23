@@ -1,0 +1,6 @@
+{
+  "name": "EncanLive",
+  "description": "Recherche d'enchères en direct à travers le Canada par province avec photos, prix en temps réel, liens officiels, favoris et calculateur de frais et taxes provinciales.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

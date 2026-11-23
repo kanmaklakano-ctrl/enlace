@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">EncanLive</string>
+    <string name="nav_explore">Explorer</string>
+    <string name="nav_favorites">Favoris</string>
+    <string name="nav_sources">Sources</string>
+    <string name="nav_calculator">Calculateur</string>
+    <string name="search_hint">Rechercher (ex. Toyota, DeWalt, tracteur…)</string>
+    <string name="all_canada">Tout le Canada</string>
+    <string name="open_official_auction">Consulter l\'enchère officielle</string>
+    <string name="share_auction">Partager cette enchère</string>
+    <string name="independent_notice">EncanLive est un agrégateur indépendant de recherche d\'enchères publiques au Canada. Il n\'est affilié à aucun organisme gouvernemental ni maison d\'encan.</string>
+    <string name="cd_hero_banner">Bannière des enchères en direct au Canada</string>
+    <string name="cd_empty_illustration">Illustration d\'enchères canadiennes</string>
+    <string name="cd_back">Retour</string>
+    <string name="cd_clear_search">Effacer la recherche</string>
+    <string name="cd_favorite">Ajouter ou retirer des favoris</string>
+    <string name="cd_share">Partager l\'enchère</string>
+    <string name="cd_refresh">Actualiser en direct</string>
+    <string name="cd_open_external">Ouvrir le lien externe</string>
+</resources>
