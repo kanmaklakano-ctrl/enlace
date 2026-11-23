@@ -15,10 +15,11 @@ class PoliceAuctionsConnector : AuctionConnector {
     private val baseOrigin = "https://www.policeauctionscanada.com"
 
     override fun buildDirectSearchUrl(query: String, province: CanadianProvince): String {
-        return if (query.isBlank()) {
+        val enQuery = BilingualQueryTranslator.toEnglishSearchQuery(query)
+        return if (enQuery.isBlank()) {
             "$baseOrigin/Browse?SortFilterOptions=1"
         } else {
-            "$baseOrigin/Browse?FullTextQuery=${AuctionHttpClient.urlEncode(query)}&SortFilterOptions=1"
+            "$baseOrigin/Browse?FullTextQuery=${AuctionHttpClient.urlEncode(enQuery)}&SortFilterOptions=1"
         }
     }
 

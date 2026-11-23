@@ -57,7 +57,7 @@ enum class CanadianProvince(
         taxRate = 0.12,
         taxLabel = "TPS 5 % + TVP 7 %",
         majorCities = "Vancouver, Victoria, Surrey, Kelowna",
-        hibidSubdomain = "bc",
+        hibidSubdomain = "british-columbia",
         gcsCode = "BC"
     ),
     MB(
@@ -87,7 +87,7 @@ enum class CanadianProvince(
         taxRate = 0.14,
         taxLabel = "TVH 14 %",
         majorCities = "Halifax, Dartmouth, Sydney",
-        hibidSubdomain = "maritimes",
+        hibidSubdomain = "nova-scotia",
         gcsCode = "NS"
     ),
     NB(
@@ -97,7 +97,7 @@ enum class CanadianProvince(
         taxRate = 0.15,
         taxLabel = "TVH 15 %",
         majorCities = "Moncton, Saint John, Fredericton",
-        hibidSubdomain = "maritimes",
+        hibidSubdomain = "new-brunswick",
         gcsCode = "NB"
     ),
     NL(
@@ -107,7 +107,7 @@ enum class CanadianProvince(
         taxRate = 0.15,
         taxLabel = "TVH 15 %",
         majorCities = "St. John's, Corner Brook",
-        hibidSubdomain = "maritimes",
+        hibidSubdomain = "newfoundland-and-labrador",
         gcsCode = "NL"
     ),
     PE(
@@ -117,7 +117,7 @@ enum class CanadianProvince(
         taxRate = 0.15,
         taxLabel = "TVH 15 %",
         majorCities = "Charlottetown, Summerside",
-        hibidSubdomain = "maritimes",
+        hibidSubdomain = "prince-edward-island",
         gcsCode = "PE"
     ),
     YT(
@@ -169,20 +169,29 @@ enum class CanadianProvince(
             return when {
                 clean.contains("ONTARIO") || clean.contains("TORONTO") || clean.contains("OTTAWA") ||
                     clean.contains("MISSISSAUGA") || clean.contains("HAMILTON") || clean.contains("SCARBOROUGH") ||
-                    clean.contains("BRAMPTON") || clean.contains("KITCHENER") || clean.contains("WINDSOR") -> ON
+                    clean.contains("BRAMPTON") || clean.contains("KITCHENER") || clean.contains("WINDSOR") ||
+                    clean.contains("BRANTFORD") || clean.contains("NEWMARKET") || clean.contains("BURLINGTON") ||
+                    clean.contains("BARRIE") || clean.contains("VAUGHAN") || clean.contains("MARKHAM") ||
+                    clean.contains("OAKVILLE") || clean.contains("PICKERING") || clean.contains("WATERLOO") ||
+                    clean.contains("GUELPH") -> ON
                 clean.contains("QUEBEC") || clean.contains("QUÉBEC") || clean.contains("MONTREAL") ||
                     clean.contains("MONTRÉAL") || clean.contains("LAVAL") || clean.contains("GATINEAU") ||
-                    clean.contains("SHERBROOKE") || clean.contains("LONGUEUIL") -> QC
+                    clean.contains("SHERBROOKE") || clean.contains("LONGUEUIL") || clean.contains("SAINT-LAURENT") ||
+                    clean.contains("BROSSARD") || clean.contains("TROIS-RIVI") || clean.contains("DRUMMONDVILLE") -> QC
                 clean.contains("ALBERTA") || clean.contains("CALGARY") || clean.contains("EDMONTON") ||
-                    clean.contains("RED DEER") || clean.contains("LETHBRIDGE") || clean.contains("LA CRETE") -> AB
+                    clean.contains("RED DEER") || clean.contains("LETHBRIDGE") || clean.contains("LA CRETE") ||
+                    clean.contains("NISKU") || clean.contains("AIRDRIE") -> AB
                 clean.contains("BRITISH COLUMBIA") || clean.contains("COLOMBIE") || clean.contains("VANCOUVER") ||
-                    clean.contains("VICTORIA") || clean.contains("SURREY") || clean.contains("KELOWNA") -> BC
+                    clean.contains("VICTORIA") || clean.contains("SURREY") || clean.contains("KELOWNA") ||
+                    clean.contains("LANGLEY") || clean.contains("BURNABY") || clean.contains("RICHMOND") ||
+                    clean.contains("DELTA") || clean.contains("ABBOTSFORD") -> BC
                 clean.contains("MANITOBA") || clean.contains("WINNIPEG") || clean.contains("BRANDON") ||
                     clean.contains("HEADINGLEY") -> MB
                 clean.contains("SASKATCHEWAN") || clean.contains("SASKATOON") || clean.contains("REGINA") -> SK
-                clean.contains("NOVA SCOTIA") || clean.contains("NOUVELLE-ÉCOSSE") || clean.contains("HALIFAX") -> NS
+                clean.contains("NOVA SCOTIA") || clean.contains("NOUVELLE-ÉCOSSE") || clean.contains("HALIFAX") ||
+                    clean.contains("DARTMOUTH") -> NS
                 clean.contains("NEW BRUNSWICK") || clean.contains("NOUVEAU-BRUNSWICK") || clean.contains("MONCTON") ||
-                    clean.contains("FREDERICTON") -> NB
+                    clean.contains("FREDERICTON") || clean.contains("SAINT JOHN") -> NB
                 clean.contains("NEWFOUNDLAND") || clean.contains("TERRE-NEUVE") -> NL
                 clean.contains("PRINCE EDWARD") || clean.contains("PRINCE-ÉDOUARD") || clean.contains("PEI") -> PE
                 clean.contains("YUKON") || clean.contains("WHITEHORSE") -> YT

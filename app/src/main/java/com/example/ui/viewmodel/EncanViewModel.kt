@@ -36,6 +36,9 @@ data class ExploreUiState(
     val sortOrder: SortOrder = SortOrder.CLOSING_SOON,
     val maxPriceFilter: Double? = null,
     val selectedSourceFilter: AuctionSourceId? = null,
+    val hideAccessories: Boolean = false,
+    val hiddenAccessoriesCount: Int = 0,
+    val isDeviceSearch: Boolean = false,
     val isRefreshing: Boolean = false,
     val hasCompletedInitialSearch: Boolean = false,
     val showingCachedFallback: Boolean = false,
@@ -77,6 +80,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
     private val _sortOrder = MutableStateFlow(SortOrder.CLOSING_SOON)
     private val _maxPriceFilter = MutableStateFlow<Double?>(null)
     private val _selectedSourceFilter = MutableStateFlow<AuctionSourceId?>(null)
+    private val _hideAccessories = MutableStateFlow(false)
     private val _isRefreshing = MutableStateFlow(false)
     private val _hasCompletedInitial = MutableStateFlow(false)
     private val _lastUpdatedMillis = MutableStateFlow<Long?>(null)
@@ -112,7 +116,8 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
         val category: AuctionCategory,
         val sortOrder: SortOrder,
         val maxPrice: Double?,
-        val sourceFilter: AuctionSourceId?
+        val sourceFilter: AuctionSourceId?,
+        val hideAccessories: Boolean
     )
 
     private val filtersFlow = combine(
@@ -120,9 +125,11 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
         _selectedProvince,
         _selectedCategory,
         _sortOrder,
-        combine(_maxPriceFilter, _selectedSourceFilter) { maxP, src -> maxP to src }
-    ) { qPair, prov, cat, sort, pair ->
-        FilterSnapshot(qPair.first, qPair.second, prov, cat, sort, pair.first, pair.second)
+        combine(_maxPriceFilter, _selectedSourceFilter, _hideAccessories) { maxP, src, hideAcc ->
+            Triple(maxP, src, hideAcc)
+        }
+    ) { qPair, prov, cat, sort, triple ->
+        FilterSnapshot(qPair.first, qPair.second, prov, cat, sort, triple.first, triple.second, triple.third)
     }
 
     private data class RuntimeSnapshot(
@@ -158,9 +165,11 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
     val exploreState: StateFlow<ExploreUiState> = combine(filtersFlow, runtimeFlow) { f, r ->
         val showingCache = r.liveLots.isEmpty() && r.cachedLots.isNotEmpty()
         val baseLots = if (r.liveLots.isNotEmpty()) r.liveLots else r.cachedLots
-        val filtered = applyFiltersAndSort(
+        val plan = BilingualQueryTranslator.analyzeQuery(f.query)
+        val filterResult = applyFiltersAndSort(
             lots = baseLots,
             f = f,
+            plan = plan,
             enabledSources = r.enabledSources,
             isServerMatchedLive = !showingCache && f.query.trim().equals(f.lastFetchedQuery.trim(), ignoreCase = true)
         )
@@ -178,12 +187,15 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
             sortOrder = f.sortOrder,
             maxPriceFilter = f.maxPrice,
             selectedSourceFilter = f.sourceFilter,
+            hideAccessories = f.hideAccessories,
+            hiddenAccessoriesCount = filterResult.hiddenAccessoriesCount,
+            isDeviceSearch = plan.isDeviceSearch,
             isRefreshing = r.isRefreshing,
             hasCompletedInitialSearch = r.hasInitial,
             showingCachedFallback = showingCache,
             lastUpdatedMillis = r.lastUpdated,
             liveLots = baseLots,
-            filteredLots = filtered,
+            filteredLots = filterResult.lots,
             sourceStatuses = orderedStatuses,
             enabledSources = r.enabledSources,
             favoriteIds = r.favoriteIds,
@@ -228,7 +240,10 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun submitSearch() {
+        val plan = BilingualQueryTranslator.analyzeQuery(_query.value)
         _selectedSourceFilter.value = null
+        _hideAccessories.value = plan.shouldFilterAccessoriesByDefault
+        _sortOrder.value = if (plan.rawQuery.isNotBlank()) SortOrder.RELEVANCE else SortOrder.CLOSING_SOON
         refreshLiveAuctions()
     }
 
@@ -236,7 +251,14 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
         _query.value = keyword
         _selectedCategory.value = AuctionCategory.ALL
         _selectedSourceFilter.value = null
+        val plan = BilingualQueryTranslator.analyzeQuery(keyword)
+        _hideAccessories.value = plan.shouldFilterAccessoriesByDefault
+        _sortOrder.value = if (plan.rawQuery.isNotBlank()) SortOrder.RELEVANCE else SortOrder.CLOSING_SOON
         refreshLiveAuctions()
+    }
+
+    fun toggleHideAccessories() {
+        _hideAccessories.update { !it }
     }
 
     fun selectProvince(province: CanadianProvince) {
@@ -360,6 +382,9 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
         _selectedProvince.value = saved.province
         _selectedCategory.value = saved.category
         _selectedSourceFilter.value = null
+        val plan = BilingualQueryTranslator.analyzeQuery(saved.query)
+        _hideAccessories.value = plan.shouldFilterAccessoriesByDefault
+        _sortOrder.value = if (plan.rawQuery.isNotBlank()) SortOrder.RELEVANCE else SortOrder.CLOSING_SOON
         refreshLiveAuctions()
     }
 
@@ -403,15 +428,21 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private data class FilteredResult(
+        val lots: List<AuctionLot>,
+        val hiddenAccessoriesCount: Int
+    )
+
     private fun applyFiltersAndSort(
         lots: List<AuctionLot>,
         f: FilterSnapshot,
+        plan: com.example.data.network.SmartQueryPlan,
         enabledSources: Set<AuctionSourceId>,
         isServerMatchedLive: Boolean
-    ): List<AuctionLot> {
-        val expandedTerms = BilingualQueryTranslator.expandMatchingTerms(f.query)
+    ): FilteredResult {
+        val expandedTerms = plan.expandedTerms
 
-        val filtered = lots.filter { lot ->
+        val baseFiltered = lots.filter { lot ->
             if (lot.sourceId !in enabledSources) return@filter false
             if (f.sourceFilter != null && lot.sourceId != f.sourceFilter) return@filter false
             if (f.province != CanadianProvince.ALL &&
@@ -429,8 +460,6 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
             if (f.maxPrice != null && lot.currentBid != null && lot.currentBid > f.maxPrice) {
                 return@filter false
             }
-            // When lots came straight from live remote search for this exact query, keep them!
-            // When user is typing locally before submitting or viewing offline cache, apply bilingual synonym match.
             if (!isServerMatchedLive && expandedTerms.isNotEmpty()) {
                 val hay = BilingualQueryTranslator.normalize(
                     "${lot.title} ${lot.description} ${lot.city} ${lot.auctionHouse} ${lot.province.displayNameFr} ${lot.province.displayNameEn}"
@@ -440,19 +469,39 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
             true
         }
 
-        return when (f.sortOrder) {
-            SortOrder.CLOSING_SOON -> filtered.sortedWith(
+        // Smart accessory filtering (only hides accessories if real non-accessory lots exist, so we never show 0 results unnecessarily)
+        val nonAccessories = if (plan.isDeviceSearch) {
+            baseFiltered.filterNot { BilingualQueryTranslator.isLikelyAccessory(it, plan) }
+        } else {
+            baseFiltered
+        }
+        val accessoryCount = (baseFiltered.size - nonAccessories.size).coerceAtLeast(0)
+        val finalPool = if (f.hideAccessories && nonAccessories.isNotEmpty()) {
+            nonAccessories
+        } else {
+            baseFiltered
+        }
+        val actuallyHidden = if (f.hideAccessories && nonAccessories.isNotEmpty()) accessoryCount else 0
+
+        val sorted = when (f.sortOrder) {
+            SortOrder.RELEVANCE -> finalPool.sortedWith(
+                compareByDescending<AuctionLot> { BilingualQueryTranslator.scoreRelevance(it, plan) }
+                    .thenByDescending { it.currentBid ?: -1.0 }
+                    .thenBy { it.closingTimeMillis ?: Long.MAX_VALUE }
+            )
+            SortOrder.CLOSING_SOON -> finalPool.sortedWith(
                 compareByDescending<AuctionLot> { !it.imageUrl.isNullOrBlank() }
                     .thenBy { it.closingTimeMillis ?: Long.MAX_VALUE }
                     .thenByDescending { it.bidCount }
             )
-            SortOrder.PRICE_ASC -> filtered.sortedBy { it.currentBid ?: Double.MAX_VALUE }
-            SortOrder.PRICE_DESC -> filtered.sortedByDescending { it.currentBid ?: -1.0 }
-            SortOrder.MOST_BIDS -> filtered.sortedByDescending { it.bidCount }
-            SortOrder.RECENT -> filtered.sortedWith(
+            SortOrder.PRICE_ASC -> finalPool.sortedBy { it.currentBid ?: Double.MAX_VALUE }
+            SortOrder.PRICE_DESC -> finalPool.sortedByDescending { it.currentBid ?: -1.0 }
+            SortOrder.MOST_BIDS -> finalPool.sortedByDescending { it.bidCount }
+            SortOrder.RECENT -> finalPool.sortedWith(
                 compareByDescending<AuctionLot> { !it.imageUrl.isNullOrBlank() }
                     .thenByDescending { it.fetchedAtMillis }
             )
         }
+        return FilteredResult(lots = sorted, hiddenAccessoriesCount = actuallyHidden)
     }
 }

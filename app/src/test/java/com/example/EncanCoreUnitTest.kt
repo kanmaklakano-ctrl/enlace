@@ -2,9 +2,13 @@ package com.example
 
 import com.example.data.network.AuctionHttpClient
 import com.example.data.network.BilingualQueryTranslator
+import com.example.model.AuctionCategory
+import com.example.model.AuctionLot
+import com.example.model.AuctionSourceId
 import com.example.model.CanadianProvince
 import com.example.model.CostBreakdown
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -19,6 +23,42 @@ class EncanCoreUnitTest {
         assertEquals("tractor", BilingualQueryTranslator.toEnglishSearchQuery("tracteur"))
         assertTrue("toyota" in BilingualQueryTranslator.expandMatchingTerms("voiture"))
         assertTrue("hyundai" in BilingualQueryTranslator.expandMatchingTerms("voiture"))
+    }
+
+    @Test
+    fun smartQueryEngineStripsFillerWordsAndFiltersPhoneAccessories() {
+        val plan = BilingualQueryTranslator.analyzeQuery("lot iphone")
+        assertEquals("iphone", plan.englishQuery)
+        assertTrue(plan.wantsBulkLot)
+        assertTrue(plan.shouldFilterAccessoriesByDefault)
+        assertTrue(plan.apiQueries.contains("apple iphone"))
+
+        val realPhone = AuctionLot(
+            id = "1",
+            sourceId = AuctionSourceId.HIBID_CANADA,
+            title = "Apple iPhone 15 Pro 256GB Unlocked",
+            description = "Clean IMEI unlocked smartphone",
+            currentBid = 340.0,
+            imageUrl = "https://cdn.hibid.com/img.axd?id=1",
+            auctionUrl = "https://canada.hibid.com/lot/1/iphone",
+            province = CanadianProvince.ON,
+            city = "London, ON",
+            auctionHouse = "Test",
+            category = AuctionCategory.ELECTRONICS
+        )
+        val cheapCase = realPhone.copy(
+            id = "2",
+            title = "OtterBox Defender Series Case for iPhone 15 Pro",
+            description = "Protective silicone cover",
+            currentBid = 2.0
+        )
+
+        assertFalse(BilingualQueryTranslator.isLikelyAccessory(realPhone, plan))
+        assertTrue(BilingualQueryTranslator.isLikelyAccessory(cheapCase, plan))
+        assertTrue(
+            BilingualQueryTranslator.scoreRelevance(realPhone, plan) >
+                BilingualQueryTranslator.scoreRelevance(cheapCase, plan)
+        )
     }
 
     @Test

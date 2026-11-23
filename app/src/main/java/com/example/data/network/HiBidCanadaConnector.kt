@@ -6,32 +6,93 @@ import com.example.model.AuctionSourceId
 import com.example.model.CanadianProvince
 import com.example.model.ConnectorState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.parser.Parser
 
 /**
- * Live HiBid Canada connector supporting all Canadian regional portals
- * (canada, ontario, quebec, alberta, bc, manitoba, saskatchewan, maritimes).
- * Decodes Angular SSR Apollo TransferState (`script#hibid-state`), resolves
- * `"Auction:XXXX"` `__ref` pointers for exact city/province/auctioneer, and
- * falls back to rendered HTML lot cards if needed.
+ * Supercharged live HiBid Canada connector powered primarily by HiBid's live GraphQL API
+ * (`POST https://canada.hibid.com/graphql`) with exact Canadian province filtering (`state`)
+ * and smart multi-query ranking (e.g., querying both "apple iphone" and "iphone" sorted by
+ * `BID_AMOUNT_HIGH_TO_LOW` so real phones/devices immediately surface ahead of $1 accessories).
+ *
+ * Falls back transparently to HiBid regional SSR (`script#hibid-state`) and HTML cards.
  */
 class HiBidCanadaConnector : AuctionConnector {
     override val sourceId: AuctionSourceId = AuctionSourceId.HIBID_CANADA
 
+    companion object {
+        private const val GRAPHQL_ENDPOINT = "https://canada.hibid.com/graphql"
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        private const val LOT_SEARCH_QUERY = """
+            query LotSearch(${'$'}input: LotSearchInput!, ${'$'}pageNumber: Int!, ${'$'}pageLength: Int!) {
+              lotSearch(input: ${'$'}input, pageNumber: ${'$'}pageNumber, pageLength: ${'$'}pageLength) {
+                pagedResults {
+                  totalCount
+                  results {
+                    id
+                    lead
+                    description
+                    lotNumber
+                    lotState {
+                      highBid
+                      minBid
+                      buyNow
+                      bidCount
+                      timeLeft
+                      timeLeftLead
+                      timeLeftTitle
+                      timeLeftSeconds
+                      isClosed
+                    }
+                    featuredPicture {
+                      fullSizeLocation
+                      hdThumbnailLocation
+                      thumbnailLocation
+                    }
+                    site {
+                      subdomain
+                    }
+                    auction {
+                      eventName
+                      eventCity
+                      eventState
+                      buyerPremiumRate
+                      auctioneer {
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """
+    }
+
     override fun buildDirectSearchUrl(query: String, province: CanadianProvince): String {
-        val sub = province.hibidSubdomain ?: "canada"
-        val base = "https://$sub.hibid.com/lots"
-        val englishQuery = BilingualQueryTranslator.toEnglishSearchQuery(query)
-        val params = mutableListOf<String>()
-        if (englishQuery.isNotBlank()) params.add("q=${AuctionHttpClient.urlEncode(englishQuery)}")
-        if (province != CanadianProvince.ALL) {
-            params.add("apage=1")
+        val plan = BilingualQueryTranslator.analyzeQuery(query)
+        val searchTerm = plan.apiQueries.firstOrNull() ?: plan.englishQuery
+        val base = if (province == CanadianProvince.ALL) {
+            "https://canada.hibid.com/lots"
+        } else {
+            val slug = province.hibidSubdomain ?: "canada"
+            if (slug == "canada") "https://canada.hibid.com/lots" else "https://hibid.com/$slug/lots"
         }
-        return if (params.isEmpty()) base else "$base?${params.joinToString("&")}"
+        return if (searchTerm.isNotBlank()) {
+            val sortParam = if (plan.isDeviceSearch) "&s=BID_AMOUNT_HIGH_TO_LOW" else ""
+            "$base?q=${AuctionHttpClient.urlEncode(searchTerm)}$sortParam"
+        } else {
+            base
+        }
     }
 
     override suspend fun search(
@@ -40,36 +101,49 @@ class HiBidCanadaConnector : AuctionConnector {
         category: AuctionCategory
     ): ConnectorResult = withContext(Dispatchers.IO) {
         val started = System.currentTimeMillis()
-        val effectiveQuery = buildEffectiveQuery(query, category)
-        val sub = province.hibidSubdomain ?: "canada"
-        val origin = "https://$sub.hibid.com"
-        val requestUrl = if (effectiveQuery.isNotBlank()) {
-            "$origin/lots?q=${AuctionHttpClient.urlEncode(effectiveQuery)}"
+        val plan = BilingualQueryTranslator.analyzeQuery(query)
+        val directUrl = buildDirectSearchUrl(query, province)
+
+        val apiQueries = buildApiQueries(plan, category)
+
+        // 1. Primary path: parallel live GraphQL searches against HiBid Canada
+        val graphqlLots = runCatching {
+            fetchViaGraphQlSmart(
+                apiQueries = apiQueries,
+                province = province,
+                isDeviceSearch = plan.isDeviceSearch,
+                hasUserQuery = plan.englishQuery.isNotBlank()
+            )
+        }.getOrDefault(emptyList())
+
+        // 2. Fallback path: regional SSR HTML page if GraphQL returns empty
+        val finalLots = if (graphqlLots.isNotEmpty()) {
+            graphqlLots
         } else {
-            "$origin/lots"
+            val fallbackQuery = apiQueries.firstOrNull().orEmpty()
+            val fallbackUrl = buildSsrUrl(fallbackQuery, province, plan.isDeviceSearch)
+            runCatching { fetchLotsFromRegionalPage(fallbackUrl, "https://canada.hibid.com", province) }
+                .getOrDefault(emptyList())
+                .ifEmpty {
+                    if (province != CanadianProvince.ALL && fallbackQuery.isNotBlank()) {
+                        val caUrl = "https://canada.hibid.com/lots?q=${AuctionHttpClient.urlEncode(fallbackQuery)}"
+                        runCatching { fetchLotsFromRegionalPage(caUrl, "https://canada.hibid.com", province) }
+                            .getOrDefault(emptyList())
+                    } else {
+                        emptyList()
+                    }
+                }
         }
 
-        val lots = runCatching { fetchLotsFromRegionalPage(requestUrl, origin, province) }
-            .getOrDefault(emptyList())
-            .ifEmpty {
-                if (sub != "canada" && effectiveQuery.isNotBlank()) {
-                    val caUrl = "https://canada.hibid.com/lots?q=${AuctionHttpClient.urlEncode(effectiveQuery)}"
-                    runCatching { fetchLotsFromRegionalPage(caUrl, "https://canada.hibid.com", province) }
-                        .getOrDefault(emptyList())
-                } else {
-                    emptyList()
-                }
-            }
-
         val latency = System.currentTimeMillis() - started
-        if (lots.isNotEmpty()) {
+        if (finalLots.isNotEmpty()) {
             ConnectorResult(
                 sourceId = sourceId,
                 state = ConnectorState.CONNECTED,
-                lots = lots,
+                lots = finalLots,
                 latencyMs = latency,
-                statusDetail = "Catalogue en direct (${lots.size} lots)",
-                directSearchUrl = requestUrl
+                statusDetail = "API HiBid en direct (${finalLots.size} lots)",
+                directSearchUrl = directUrl
             )
         } else {
             ConnectorResult(
@@ -78,23 +152,149 @@ class HiBidCanadaConnector : AuctionConnector {
                 lots = emptyList(),
                 latencyMs = latency,
                 statusDetail = "Portail HiBid prêt — ouvrir la recherche directe",
-                directSearchUrl = requestUrl
+                directSearchUrl = directUrl
             )
         }
     }
 
-    private fun buildEffectiveQuery(query: String, category: AuctionCategory): String {
-        val translated = BilingualQueryTranslator.toEnglishSearchQuery(query)
-        if (translated.isNotBlank()) return translated
-        return when (category) {
+    private fun buildApiQueries(plan: SmartQueryPlan, category: AuctionCategory): List<String> {
+        if (plan.apiQueries.isNotEmpty()) return plan.apiQueries
+        val catTerm = when (category) {
             AuctionCategory.ALL -> ""
             AuctionCategory.VEHICLES -> "car"
             AuctionCategory.TOOLS_EQUIPMENT -> "tools"
             AuctionCategory.MACHINERY -> "tractor"
-            AuctionCategory.ELECTRONICS -> "electronics"
+            AuctionCategory.ELECTRONICS -> "apple iphone"
             AuctionCategory.JEWELRY_COLLECTIBLES -> "gold"
             AuctionCategory.HOME_FURNITURE -> "furniture"
             AuctionCategory.STORAGE_LIQUIDATION -> "pallet"
+        }
+        return listOf(catTerm)
+    }
+
+    private fun buildSsrUrl(searchTerm: String, province: CanadianProvince, highToLow: Boolean): String {
+        val base = if (province == CanadianProvince.ALL) {
+            "https://canada.hibid.com/lots"
+        } else {
+            val slug = province.hibidSubdomain ?: "canada"
+            if (slug == "canada") "https://canada.hibid.com/lots" else "https://hibid.com/$slug/lots"
+        }
+        if (searchTerm.isBlank()) return base
+        val sort = if (highToLow) "&s=BID_AMOUNT_HIGH_TO_LOW" else ""
+        return "$base?q=${AuctionHttpClient.urlEncode(searchTerm)}$sort"
+    }
+
+    private suspend fun fetchViaGraphQlSmart(
+        apiQueries: List<String>,
+        province: CanadianProvince,
+        isDeviceSearch: Boolean,
+        hasUserQuery: Boolean
+    ): List<AuctionLot> = coroutineScope {
+        val primarySort = when {
+            isDeviceSearch -> "BID_AMOUNT_HIGH_TO_LOW"
+            hasUserQuery -> "BID_AMOUNT_HIGH_TO_LOW"
+            else -> "TIME_REMAINING"
+        }
+
+        // Run up to 2 smart query variants in parallel (e.g. "apple iphone" + "iphone", or "samsung galaxy" + "samsung")
+        val tasks = mutableListOf<Pair<String, String>>()
+        apiQueries.take(2).forEach { q ->
+            tasks.add(q to primarySort)
+        }
+        // If only 1 query and it's a user search, also fetch TIME_REMAINING to capture fresh $0 opening-bid items
+        if (tasks.size == 1 && hasUserQuery && primarySort == "BID_AMOUNT_HIGH_TO_LOW") {
+            tasks.add(tasks.first().first to "TIME_REMAINING")
+        }
+
+        val batches = tasks.map { (q, sort) ->
+            async(Dispatchers.IO) {
+                runCatching {
+                    executeGraphQlSearch(
+                        searchText = q,
+                        province = province,
+                        sortOrder = sort,
+                        pageLength = if (tasks.size > 1) 40 else 50
+                    )
+                }.getOrDefault(emptyList())
+            }
+        }.awaitAll()
+
+        val merged = linkedMapOf<String, AuctionLot>()
+        for (batch in batches) {
+            for (lot in batch) {
+                merged.putIfAbsent(lot.id, lot)
+            }
+        }
+        merged.values.toList().take(80)
+    }
+
+    private fun executeGraphQlSearch(
+        searchText: String,
+        province: CanadianProvince,
+        sortOrder: String,
+        pageLength: Int
+    ): List<AuctionLot> {
+        val inputObj = JSONObject().apply {
+            if (searchText.isNotBlank()) put("searchText", searchText)
+            put("status", "OPEN")
+            put("filter", "ALL")
+            put("isArchive", false)
+            put("countryName", "Canada")
+            put("sortOrder", sortOrder)
+            if (province != CanadianProvince.ALL) {
+                put("state", province.code)
+            }
+        }
+
+        val payload = JSONObject().apply {
+            put("operationName", "LotSearch")
+            put(
+                "variables",
+                JSONObject().apply {
+                    put("input", inputObj)
+                    put("pageNumber", 1)
+                    put("pageLength", pageLength)
+                }
+            )
+            put("query", LOT_SEARCH_QUERY)
+        }.toString()
+
+        val request = Request.Builder()
+            .url(GRAPHQL_ENDPOINT)
+            .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            )
+            .header("Accept", "application/json")
+            .header("Origin", "https://canada.hibid.com")
+            .header("Referer", "https://canada.hibid.com/lots")
+            .header("Site_Subdomain", "canada")
+            .build()
+
+        AuctionHttpClient.client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return emptyList()
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return emptyList()
+
+            val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+            val results = root
+                .optJSONObject("data")
+                ?.optJSONObject("lotSearch")
+                ?.optJSONObject("pagedResults")
+                ?.optJSONArray("results")
+                ?: return emptyList()
+
+            val emptyCache = JSONObject()
+            val now = System.currentTimeMillis()
+            val out = mutableListOf<AuctionLot>()
+            for (i in 0 until results.length()) {
+                val obj = results.optJSONObject(i) ?: continue
+                parseHibidLotJson(obj, emptyCache, "https://canada.hibid.com", province, now)?.let {
+                    out.add(it)
+                }
+            }
+            return out
         }
     }
 
@@ -124,7 +324,6 @@ class HiBidCanadaConnector : AuctionConnector {
         val rawState = doc.selectFirst("script#hibid-state")?.data()?.trim().orEmpty()
         if (rawState.isBlank()) return emptyList()
 
-        // Try direct JSON parse first so embedded &quot; inside HTML descriptions never breaks JSON syntax.
         val root = runCatching { JSONObject(rawState) }.getOrNull()
             ?: runCatching { JSONObject(Parser.unescapeEntities(rawState, false).trim()) }.getOrNull()
             ?: return emptyList()
@@ -135,7 +334,7 @@ class HiBidCanadaConnector : AuctionConnector {
         val seenIds = mutableSetOf<String>()
 
         val keys = apolloCache.keys()
-        while (keys.hasNext() && collected.size < 45) {
+        while (keys.hasNext() && collected.size < 50) {
             val key = keys.next()
             if (key.startsWith("Lot:")) {
                 val obj = apolloCache.optJSONObject(key) ?: continue
@@ -148,7 +347,7 @@ class HiBidCanadaConnector : AuctionConnector {
         if (collected.isEmpty()) {
             collectLotsRecursively(root, apolloCache, origin, requestedProvince, now, seenIds, collected)
         }
-        return collected.take(45)
+        return collected.take(50)
     }
 
     private fun findApolloCache(node: JSONObject, depth: Int): JSONObject? {
@@ -176,7 +375,7 @@ class HiBidCanadaConnector : AuctionConnector {
         seenIds: MutableSet<String>,
         out: MutableList<AuctionLot>
     ) {
-        if (out.size >= 45) return
+        if (out.size >= 50) return
         when (node) {
             is JSONObject -> {
                 if (node.has("lead") && (node.has("lotState") || node.has("featuredPicture") || node.has("lotNumber"))) {
@@ -246,12 +445,11 @@ class HiBidCanadaConnector : AuctionConnector {
         val auctioneer = auctioneerObj?.optString("name", "").orEmpty().trim()
             .ifBlank { auctionObj?.optString("eventName", "").orEmpty().trim() }
             .ifBlank { "HiBid Canada" }
-        val currency = auctionObj?.optString("currencyCode", "CAD").orEmpty().ifBlank { "CAD" }
         val bpRate = auctionObj?.optDouble("buyerPremiumRate")?.takeIf { !it.isNaN() && it >= 0.0 }
             ?: sourceId.defaultBuyersPremium
 
         val siteObj = resolveRef(obj.optJSONObject("site"), apolloCache)
-        val siteSubdomain = siteObj?.optString("subdomain", "").orEmpty().trim()
+        val siteSubdomain = siteObj?.optString("subdomain", "").orEmpty().trim().lowercase()
         val detectedProv = CanadianProvince.fromCodeOrText("$eventState $eventCity $siteSubdomain")
             .let { if (it == CanadianProvince.ALL) requestedProvince else it }
 
@@ -259,7 +457,11 @@ class HiBidCanadaConnector : AuctionConnector {
             .replace(Regex("[^a-z0-9]+"), "-")
             .trim('-')
             .take(60)
-        val lotHost = if (siteSubdomain.isNotBlank()) "https://$siteSubdomain.hibid.com" else origin
+        val lotHost = if (siteSubdomain.isNotBlank() && siteSubdomain != "null") {
+            "https://$siteSubdomain.hibid.com"
+        } else {
+            origin
+        }
         val lotUrl = "$lotHost/lot/$idNum/$slug"
 
         val cityDisplay = when {
@@ -274,7 +476,7 @@ class HiBidCanadaConnector : AuctionConnector {
             title = title.take(160),
             description = desc.take(600),
             currentBid = displayBid,
-            currency = currency,
+            currency = "CAD",
             bidCount = bidCount,
             imageUrl = imageUrl,
             auctionUrl = lotUrl,

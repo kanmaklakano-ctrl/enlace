@@ -11,9 +11,33 @@ enum class AuctionSourceId(
     HIBID_CANADA(
         displayName = "HiBid Canada",
         domain = "canada.hibid.com",
-        taglineFr = "Réseau national de maisons d'encan locales (catalogue en direct)",
+        taglineFr = "Réseau national (API GraphQL live) : tech, autos, outils, bijoux & lots",
         coverageLabel = "Toutes les provinces",
         defaultBuyersPremium = 15.0,
+        supportsLiveApiOrScrape = true
+    ),
+    MAXX_AUCTIONS_ON(
+        displayName = "Maxx Auctions",
+        domain = "www.maxx.ca",
+        taglineFr = "Liquidations de détail, électronique, Apple/Samsung & électroménagers",
+        coverageLabel = "Ontario (GTA / Toronto)",
+        defaultBuyersPremium = 15.0,
+        supportsLiveApiOrScrape = true
+    ),
+    AUCTION_403_ON(
+        displayName = "403 Auction",
+        domain = "www.403auction.com",
+        taglineFr = "Palettes revendeurs, électronique, retours & fret non réclamé",
+        coverageLabel = "Ontario (Burlington / GTA)",
+        defaultBuyersPremium = 15.0,
+        supportsLiveApiOrScrape = true
+    ),
+    ABLE_AUCTIONS_BC(
+        displayName = "Able Auctions",
+        domain = "www.ableauctions.ca",
+        taglineFr = "Encans en ligne majeurs en Colombie-Britannique (tech, véhicules, commerce)",
+        coverageLabel = "Colombie-Britannique (Vancouver / Langley)",
+        defaultBuyersPremium = 17.0,
         supportsLiveApiOrScrape = true
     ),
     MICHENER_ALLEN_AB(
@@ -160,6 +184,7 @@ data class SourceFetchStatus(
 )
 
 enum class SortOrder(val displayNameFr: String) {
+    RELEVANCE("Pertinence"),
     CLOSING_SOON("Fin imminente"),
     PRICE_ASC("Prix croissant"),
     PRICE_DESC("Prix décroissant"),

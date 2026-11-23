@@ -177,6 +177,9 @@ class GenericCanadianWebConnector(
 object CanadianConnectorsRegistry {
     fun buildAllConnectors(): List<AuctionConnector> = listOf(
         HiBidCanadaConnector(),
+        MaxxAuctionsConnector(),
+        Auction403Connector(),
+        AbleAuctionsConnector(),
         MichenerNetworkConnector(
             sourceId = AuctionSourceId.MICHENER_ALLEN_AB,
             baseOrigin = "https://www.maauctions.com",

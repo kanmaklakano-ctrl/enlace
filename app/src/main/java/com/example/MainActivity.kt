@@ -248,6 +248,7 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                                 onSelectSortOrder = viewModel::selectSortOrder,
                                 onSetMaxPrice = viewModel::setMaxPriceFilter,
                                 onSelectSourceFilter = viewModel::selectSourceFilter,
+                                onToggleHideAccessories = viewModel::toggleHideAccessories,
                                 onRefresh = viewModel::refreshLiveAuctions,
                                 onSaveSearch = viewModel::saveCurrentSearch,
                                 onLotClick = { lot ->

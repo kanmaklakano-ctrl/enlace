@@ -4,7 +4,7 @@
     <string name="nav_favorites">Favoris</string>
     <string name="nav_sources">Sources</string>
     <string name="nav_calculator">Calculateur</string>
-    <string name="search_hint">Rechercher (ex. Toyota, DeWalt, tracteur…)</string>
+    <string name="search_hint">Rechercher (iPhone, Samsung, voiture, outils…)</string>
     <string name="all_canada">Tout le Canada</string>
     <string name="open_official_auction">Consulter l\'enchère officielle</string>
     <string name="share_auction">Partager cette enchère</string>

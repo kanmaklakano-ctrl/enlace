@@ -107,6 +107,7 @@ fun ExploreScreen(
     onSelectSortOrder: (SortOrder) -> Unit,
     onSetMaxPrice: (Double?) -> Unit,
     onSelectSourceFilter: (AuctionSourceId?) -> Unit,
+    onToggleHideAccessories: () -> Unit,
     onRefresh: () -> Unit,
     onSaveSearch: () -> Unit,
     onLotClick: (AuctionLot) -> Unit,
@@ -263,7 +264,7 @@ fun ExploreScreen(
                             modifier = Modifier.padding(horizontal = 16.dp)
                         ) {
                             Text(
-                                text = "Recherche bilingue FR/EN : « ${uiState.query.trim()} » → « ${uiState.translationHint} » sur les sites canadiens",
+                                text = "Recherche intelligente : « ${uiState.query.trim()} » → « ${uiState.translationHint} »",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
@@ -271,7 +272,7 @@ fun ExploreScreen(
                         }
                     }
 
-                    val quickTerms = listOf("Voiture", "Camion", "Ford", "Toyota", "Outils", "Tracteur", "Bijoux", "Ordinateur")
+                    val quickTerms = listOf("iPhone", "Samsung", "Voiture", "Outils", "MacBook", "Palette", "Tracteur", "Bijoux")
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -545,6 +546,43 @@ fun ExploreScreen(
                 }
             }
 
+            // 6b. Smart Accessory Filter Pill (auto-shown for iPhone, Samsung, MacBook, iPad, etc.)
+            if (uiState.isDeviceSearch || uiState.hiddenAccessoriesCount > 0 || uiState.hideAccessories) {
+                item(key = "smart_accessory_filter") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = uiState.hideAccessories,
+                            onClick = onToggleHideAccessories,
+                            label = {
+                                val labelText = when {
+                                    uiState.hideAccessories && uiState.hiddenAccessoriesCount > 0 ->
+                                        "Sans accessoires (${uiState.hiddenAccessoriesCount} coques/câbles masqués)"
+                                    uiState.hideAccessories ->
+                                        "Sans accessoires (appareils prioritaires)"
+                                    else ->
+                                        "Masquer coques & accessoires"
+                                }
+                                Text(
+                                    text = labelText,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onTertiaryContainer
+                            ),
+                            modifier = Modifier.testTag("hide_accessories_chip")
+                        )
+                    }
+                }
+            }
+
             // 7. Live Auction Cards OR Smart Empty / Direct Portals Panel
             if (uiState.filteredLots.isNotEmpty()) {
                 items(uiState.filteredLots, key = { it.id }) { lot ->
@@ -613,7 +651,7 @@ fun ExploreScreen(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "HiBid Canada, Police Auctions, GovDeals, BC Auction, GCSurplus et plus",
+                                text = "HiBid Canada, Maxx Auctions, 403 Auction, Able Auctions, GCSurplus, McDougall et plus",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
