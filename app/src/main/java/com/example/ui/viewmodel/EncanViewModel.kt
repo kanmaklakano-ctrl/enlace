@@ -7,6 +7,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.ai.AuctionAiAnalyst
 import com.example.data.ai.AuctionDetailScraper
 import com.example.data.ai.AuctionStudyUiState
+import com.example.data.ai.CanadianVinLookupService
+import com.example.data.ai.CarfaxRenderRequest
+import com.example.data.ai.CarfaxReportReader
+import com.example.data.ai.ScrapedLotEvidence
 import com.google.firebase.FirebaseApp
 import com.example.data.local.EncanDatabase
 import com.example.data.local.PreferencesRepository
@@ -23,6 +27,7 @@ import com.example.model.SavedSearch
 import com.example.model.SortOrder
 import com.example.model.SourceFetchStatus
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -101,6 +106,9 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     private val _selectedLotId = MutableStateFlow<String?>(null)
     private val _studyStates = MutableStateFlow<Map<String, AuctionStudyUiState>>(emptyMap())
+    private val _activeCarfaxRender = MutableStateFlow<CarfaxRenderRequest?>(null)
+    val activeCarfaxRender: StateFlow<CarfaxRenderRequest?> = _activeCarfaxRender.asStateFlow()
+    private val scrapedEvidenceCache = mutableMapOf<String, ScrapedLotEvidence>()
 
     private val _calculatorState = MutableStateFlow(CalculatorUiState())
     val calculatorState: StateFlow<CalculatorUiState> = _calculatorState.asStateFlow()
@@ -382,7 +390,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val evidenceDeferred = async {
                     withTimeoutOrNull(8_000L) { AuctionDetailScraper.scrapeLotEvidence(lot) }
-                        ?: com.example.data.ai.ScrapedLotEvidence()
+                        ?: ScrapedLotEvidence()
                 }
                 val photoDeferred = async {
                     withTimeoutOrNull(4_000L) { AuctionDetailScraper.downloadLotBitmapIfSmall(lot.imageUrl) }
@@ -390,70 +398,92 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
 
                 var evidence = evidenceDeferred.await()
                 val photoBitmap = photoDeferred.await()
+                scrapedEvidenceCache[lot.id] = evidence
 
-                val appContext = getApplication<Application>()
-
-                // Step 2/4: If a CARFAX or official inspection report link exists, read its full content (PDF / HTTP / headless WebView)
+                val isVehicle = isLikelyVehicleLot(lot, evidence)
                 val reportUrlToRead = evidence.carfaxUrl ?: evidence.inspectionReportUrl
-                if (!reportUrlToRead.isNullOrBlank()) {
-                    lastStage = if (evidence.carfaxUrl != null) {
-                        "2/4 — Rapport CARFAX trouvé ! Lecture complète en direct…"
-                    } else {
-                        "2/4 — Rapport d'inspection trouvé ! Lecture en direct…"
+
+                // Step 2/4: Run official Canadian/NA VIN & Recall lookup IN PARALLEL with CARFAX reading
+                // (especially valuable when NO CARFAX report exists on the listing!)
+                if (!reportUrlToRead.isNullOrBlank() || isVehicle) {
+                    lastStage = when {
+                        evidence.carfaxUrl != null -> "2/4 — Lecture CARFAX + décodage NIV & rappels Canada…"
+                        evidence.inspectionReportUrl != null -> "2/4 — Lecture rapport d'inspection & dossier NIV…"
+                        evidence.detectedVin != null -> "2/4 — Pas de CARFAX : interrogation NIV officiel & rappels Canada…"
+                        else -> "2/4 — Vérification des rappels & fiabilité véhicule au Canada…"
                     }
                     _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
 
-                    val carfaxResult = com.example.data.ai.CarfaxReportReader.readReport(
-                        context = appContext,
-                        reportUrl = reportUrlToRead,
-                        timeoutMs = 15_000L
-                    )
-                    evidence = if (carfaxResult.hasContent) {
-                        val extraVin = evidence.detectedVin ?: carfaxResult.extractedText?.let {
-                            AuctionDetailScraper.extractVin(it)
+                    val vinLookupDeferred = async {
+                        if (isVehicle) {
+                            withTimeoutOrNull(6_000L) {
+                                CanadianVinLookupService.lookupVehicleIntelligence(
+                                    vin = evidence.detectedVin,
+                                    listingTitle = lot.title,
+                                    province = lot.province
+                                )
+                            }
+                        } else {
+                            null
                         }
-                        val extraKm = evidence.detectedMileage ?: carfaxResult.extractedText?.let {
-                            AuctionDetailScraper.extractMileage(it)
-                        }
-                        evidence.copy(
-                            carfaxReportText = carfaxResult.extractedText,
-                            carfaxPdfBytes = carfaxResult.pdfBytes,
-                            carfaxReadDirectly = true,
-                            carfaxSourceMethod = carfaxResult.sourceMethod,
-                            detectedVin = extraVin,
-                            detectedMileage = extraKm
-                        )
-                    } else {
-                        evidence.copy(
-                            carfaxAccessNote = "Lien CARFAX officiel détecté sur l'annonce, mais le site bloque la lecture automatique (protection anti-robot ou session expirée). Ouvrez-le via le bouton CARFAX."
-                        )
                     }
-                }
 
-                val firebaseApp = FirebaseApp.getApps(appContext).firstOrNull()
-                    ?: FirebaseApp.initializeApp(appContext)
-                if (firebaseApp == null) {
-                    Log.e("EncanViewModel", "FirebaseApp not initialized — google-services.json missing in APK.")
-                    _studyStates.update {
-                        it + (
-                            lot.id to AuctionStudyUiState.Error(
-                                "Configuration Firebase manquante dans cet APK (fichier app/google-services.json absent lors de la compilation sur GitHub). Ajoutez le secret GOOGLE_SERVICES_JSON dans GitHub Actions puis recompilez l'APK."
+                    if (!reportUrlToRead.isNullOrBlank()) {
+                        // Layer 1: Direct HTTP / native PDF check
+                        val httpResult = CarfaxReportReader.tryDirectHttpFetch(reportUrlToRead)
+                        evidence = if (httpResult.hasContent) {
+                            enrichEvidenceWithCarfax(
+                                base = evidence,
+                                extractedText = httpResult.extractedText,
+                                pdfBytes = httpResult.pdfBytes,
+                                sourceMethod = httpResult.sourceMethod
                             )
-                        )
+                        } else {
+                            // Layer 2: Activity-Window-attached WebView (executes JS + reCAPTCHA v3 + fetch/XHR JSON interception)
+                            val renderedText = requestAttachedWebViewRender(
+                                url = reportUrlToRead,
+                                timeoutMs = 18_000L
+                            )
+                            if (!renderedText.isNullOrBlank()) {
+                                enrichEvidenceWithCarfax(
+                                    base = evidence,
+                                    extractedText = renderedText,
+                                    pdfBytes = null,
+                                    sourceMethod = "WebView"
+                                )
+                            } else {
+                                evidence.copy(
+                                    carfaxAccessNote = "Lien CARFAX officiel détecté, mais le site demande une validation interactive. Appuyez sur « Lire & Analyser le CARFAX » ci-dessous pour l'ouvrir dans l'application et le faire lire immédiatement par l'IA."
+                                )
+                            }
+                        }
                     }
-                    return@launch
+
+                    var vinLookup = vinLookupDeferred.await()
+                    // If CARFAX revealed a 17-char VIN that wasn't on the auction listing, decode it now!
+                    if (vinLookup == null && !evidence.detectedVin.isNullOrBlank()) {
+                        vinLookup = withTimeoutOrNull(5_000L) {
+                            CanadianVinLookupService.lookupVehicleIntelligence(
+                                vin = evidence.detectedVin,
+                                listingTitle = lot.title,
+                                province = lot.province
+                            )
+                        }
+                    }
+
+                    evidence = evidence.copy(vinLookup = vinLookup)
+                    scrapedEvidenceCache[lot.id] = evidence
                 }
 
-                val report = aiAnalyst.analyzeLot(
+                runGeminiStudy(
                     lot = lot,
                     evidence = evidence,
                     photoBitmap = photoBitmap,
-                    onProgress = { stage ->
+                    onStageUpdate = { stage ->
                         lastStage = stage
                         _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(stage)) }
                     }
                 )
-                _studyStates.update { it + (lot.id to AuctionStudyUiState.Success(report)) }
             } catch (e: TimeoutCancellationException) {
                 Log.e("EncanViewModel", "AI auction study timed out for ${lot.id} at stage: $lastStage", e)
                 _studyStates.update {
@@ -476,6 +506,140 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * Triggered from the integrated in-app CARFAX Reader once the live CARFAX page is visible
+     * and extracted directly from the Activity's visible WebView.
+     */
+    fun studyAuctionWithCapturedCarfax(lot: AuctionLot, capturedCarfaxText: String) {
+        val cleaned = capturedCarfaxText.trim()
+        if (cleaned.isBlank()) return
+
+        activeStudyJobs[lot.id]?.cancel()
+        activeStudyJobs[lot.id] = viewModelScope.launch {
+            var lastStage = "2/4 — Rapport CARFAX capturé ! Préparation de l'analyse IA…"
+            _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
+            try {
+                val baseEvidence = scrapedEvidenceCache[lot.id]
+                    ?: withTimeoutOrNull(7_000L) { AuctionDetailScraper.scrapeLotEvidence(lot) }
+                    ?: ScrapedLotEvidence()
+                val photoBitmap = withTimeoutOrNull(4_000L) {
+                    AuctionDetailScraper.downloadLotBitmapIfSmall(lot.imageUrl)
+                }
+
+                val enriched = enrichEvidenceWithCarfax(
+                    base = baseEvidence,
+                    extractedText = cleaned,
+                    pdfBytes = null,
+                    sourceMethod = "Lecteur CARFAX intégré"
+                )
+                scrapedEvidenceCache[lot.id] = enriched
+
+                runGeminiStudy(
+                    lot = lot,
+                    evidence = enriched,
+                    photoBitmap = photoBitmap,
+                    onStageUpdate = { stage ->
+                        lastStage = stage
+                        _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(stage)) }
+                    }
+                )
+            } catch (e: TimeoutCancellationException) {
+                Log.e("EncanViewModel", "AI study with captured CARFAX timed out for ${lot.id}", e)
+                _studyStates.update {
+                    it + (
+                        lot.id to AuctionStudyUiState.Error(
+                            "Délai de 60 s dépassé pendant l'étape : « $lastStage ». Réessayez dans un instant."
+                        )
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("EncanViewModel", "AI study with captured CARFAX failed for ${lot.id}", e)
+                _studyStates.update {
+                    it + (
+                        lot.id to AuctionStudyUiState.Error(
+                            e.localizedMessage ?: "Erreur lors de l'analyse IA du rapport CARFAX."
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun requestAttachedWebViewRender(url: String, timeoutMs: Long): String? {
+        val deferred = CompletableDeferred<String?>()
+        val request = CarfaxRenderRequest(url = url, deferred = deferred)
+        _activeCarfaxRender.value = request
+        return try {
+            withTimeoutOrNull(timeoutMs) { deferred.await() }
+        } finally {
+            if (_activeCarfaxRender.value?.id == request.id) {
+                _activeCarfaxRender.value = null
+            }
+            if (!deferred.isCompleted) {
+                deferred.complete(null)
+            }
+        }
+    }
+
+    private fun enrichEvidenceWithCarfax(
+        base: ScrapedLotEvidence,
+        extractedText: String?,
+        pdfBytes: ByteArray?,
+        sourceMethod: String?
+    ): ScrapedLotEvidence {
+        val extraVin = base.detectedVin ?: extractedText?.let { AuctionDetailScraper.extractVin(it) }
+        val extraKm = base.detectedMileage ?: extractedText?.let { AuctionDetailScraper.extractMileage(it) }
+        return base.copy(
+            carfaxReportText = extractedText,
+            carfaxPdfBytes = pdfBytes,
+            carfaxReadDirectly = true,
+            carfaxSourceMethod = sourceMethod,
+            carfaxAccessNote = null,
+            detectedVin = extraVin,
+            detectedMileage = extraKm
+        )
+    }
+
+    private suspend fun runGeminiStudy(
+        lot: AuctionLot,
+        evidence: ScrapedLotEvidence,
+        photoBitmap: android.graphics.Bitmap?,
+        onStageUpdate: (String) -> Unit
+    ) {
+        val appContext = getApplication<Application>()
+        val firebaseApp = FirebaseApp.getApps(appContext).firstOrNull()
+            ?: FirebaseApp.initializeApp(appContext)
+        if (firebaseApp == null) {
+            Log.e("EncanViewModel", "FirebaseApp not initialized — google-services.json missing in APK.")
+            _studyStates.update {
+                it + (
+                    lot.id to AuctionStudyUiState.Error(
+                        "Configuration Firebase manquante dans cet APK (fichier app/google-services.json absent lors de la compilation sur GitHub). Ajoutez le secret GOOGLE_SERVICES_JSON dans GitHub Actions puis recompilez l'APK."
+                    )
+                )
+            }
+            return
+        }
+
+        val report = aiAnalyst.analyzeLot(
+            lot = lot,
+            evidence = evidence,
+            photoBitmap = photoBitmap,
+            onProgress = onStageUpdate
+        )
+        _studyStates.update { it + (lot.id to AuctionStudyUiState.Success(report)) }
+    }
+
+    private fun isLikelyVehicleLot(lot: AuctionLot, evidence: ScrapedLotEvidence): Boolean {
+        if (lot.category == AuctionCategory.VEHICLES) return true
+        if (!evidence.detectedVin.isNullOrBlank() || !evidence.carfaxUrl.isNullOrBlank()) return true
+        return Regex(
+            """(?i)\b(car|truck|suv|sedan|van|pickup|ford|toyota|honda|hyundai|nissan|chevrolet|gmc|dodge|ram|mazda|subaru|bmw|mercedes|audi|volkswagen|kia|jeep|chrysler|porsche|lexus|acura|volvo|tesla|voiture|camion|auto|vehicule|véhicule)\b"""
+        ).containsMatchIn("${lot.title} ${lot.description}")
     }
 
     fun toggleFavorite(lot: AuctionLot) {

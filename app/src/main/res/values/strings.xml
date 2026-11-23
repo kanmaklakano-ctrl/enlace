@@ -21,4 +21,6 @@
     <string name="study_auction_full">Étudier cette enchère (IA)</string>
     <string name="cd_study_auction">Étudier cette enchère avec l\'agent IA</string>
     <string name="open_carfax_report">Ouvrir le rapport CARFAX</string>
+    <string name="read_and_analyze_carfax">Lire &amp; Analyser le CARFAX</string>
+    <string name="view_carfax_report">Voir le rapport CARFAX</string>
 </resources>

@@ -54,6 +54,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.ui.components.HiddenAttachedCarfaxWebView
 import com.example.ui.screens.AuctionDetailScreen
 import com.example.ui.screens.CalculatorScreen
 import com.example.ui.screens.ExploreScreen
@@ -139,6 +140,7 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
     val selectedLot by viewModel.selectedLot.collectAsStateWithLifecycle()
     val selectedFavoriteItem by viewModel.selectedFavoriteItem.collectAsStateWithLifecycle()
     val selectedLotStudyState by viewModel.selectedLotStudyState.collectAsStateWithLifecycle()
+    val activeCarfaxRender by viewModel.activeCarfaxRender.collectAsStateWithLifecycle()
     val calculatorState by viewModel.calculatorState.collectAsStateWithLifecycle()
 
     LaunchedEffect(exploreState.snackbarMessage) {
@@ -165,6 +167,9 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useNavRail = maxWidth >= 600.dp
+
+        // Activity-Window-attached silent CARFAX reader mounted behind the opaque Scaffold
+        HiddenAttachedCarfaxWebView(request = activeCarfaxRender)
 
         Scaffold(
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
@@ -323,6 +328,9 @@ fun EncanLiveApp(viewModel: EncanViewModel = viewModel()) {
                                 onBack = { navController.popBackStack() },
                                 onStudyLot = { lot, forceRefresh ->
                                     viewModel.studyAuction(lot, forceRefresh = forceRefresh)
+                                },
+                                onAnalyzeCapturedCarfax = { lot, capturedText ->
+                                    viewModel.studyAuctionWithCapturedCarfax(lot, capturedText)
                                 },
                                 onToggleFavorite = viewModel::toggleFavorite,
                                 onSaveFavoriteNotes = viewModel::updateFavoriteNotes,

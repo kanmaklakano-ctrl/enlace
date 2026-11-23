@@ -1,23 +1,15 @@
 package com.example.data.ai
 
-import android.annotation.SuppressLint
-import android.content.Context
 import android.util.Log
-import android.webkit.CookieManager
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.example.data.network.AuctionHttpClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
 import org.json.JSONArray
+import org.json.JSONObject
 import org.jsoup.Jsoup
-import kotlin.coroutines.resume
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "CarfaxReportReader"
 private const val MAX_PDF_BYTES = 10 * 1024 * 1024
@@ -31,6 +23,23 @@ data class CarfaxReadResult(
         get() = !extractedText.isNullOrBlank() || (pdfBytes != null && pdfBytes.isNotEmpty())
 }
 
+data class CarfaxRenderRequest(
+    val id: Long = requestIdCounter.incrementAndGet(),
+    val url: String,
+    val deferred: CompletableDeferred<String?>
+) {
+    companion object {
+        private val requestIdCounter = AtomicLong(0L)
+    }
+}
+
+data class CarfaxExtractedSnapshot(
+    val combinedText: String,
+    val hasApiPayload: Boolean,
+    val isCarfaxReady: Boolean,
+    val rawCharCount: Int
+)
+
 object CarfaxReportReader {
 
     private val carfaxSignalKeywords = listOf(
@@ -40,44 +49,169 @@ object CarfaxReportReader {
         "rappel", "lien", "salvage", "rebuilt", "irreparable", "normal",
         "vehicle history report", "detailed history", "historique détaillé",
         "u.s. history", "import record", "claim", "estimate", "police reported",
-        "glass record", "carfax canada", "branding", "statut"
+        "glass record", "carfax canada", "branding", "statut", "insurance record",
+        "dossier d'assurance", "privilège", "vga", "sinistre"
     )
 
-    suspend fun readReport(
-        context: Context,
-        reportUrl: String,
-        timeoutMs: Long = 15_000L
-    ): CarfaxReadResult {
-        val cleanUrl = reportUrl.trim()
+    /**
+     * Injected into the Activity-attached WebView on page start & finish.
+     * Hooks fetch() and XMLHttpRequest to silently capture CARFAX JSON API responses
+     * even before/without full DOM rendering, and dismisses cookie consent banners.
+     */
+    val CARFAX_INTERCEPTOR_JS: String = """
+        (function() {
+            try {
+                if (!window.__encanCarfaxPayloads) {
+                    window.__encanCarfaxPayloads = [];
+                }
+                var isInteresting = function(str) {
+                    if (!str || str.length < 350) return false;
+                    var lower = str.toLowerCase();
+                    var hits = 0;
+                    var keys = ['accident','damage','odometer','service','recall','lien','branding','registration','stolen','vin','history','claim','record','carfax'];
+                    for (var i = 0; i < keys.length; i++) {
+                        if (lower.indexOf(keys[i]) !== -1) hits++;
+                    }
+                    return hits >= 3;
+                };
+                var storePayload = function(url, text) {
+                    try {
+                        if (!isInteresting(text)) return;
+                        if (window.__encanCarfaxPayloads.length < 6) {
+                            var already = window.__encanCarfaxPayloads.some(function(p) { return p.len === text.length && p.url === url; });
+                            if (!already) {
+                                window.__encanCarfaxPayloads.push({
+                                    url: String(url || ''),
+                                    len: text.length,
+                                    body: text.slice(0, 28000)
+                                });
+                            }
+                        }
+                    } catch (e) {}
+                };
+
+                if (!window.__encanHooked) {
+                    window.__encanHooked = true;
+                    if (window.fetch) {
+                        var origFetch = window.fetch;
+                        window.fetch = function() {
+                            var reqUrl = (arguments[0] && arguments[0].url) ? arguments[0].url : String(arguments[0] || '');
+                            return origFetch.apply(this, arguments).then(function(resp) {
+                                try {
+                                    var ct = (resp.headers && resp.headers.get) ? (resp.headers.get('content-type') || '') : '';
+                                    if (ct.indexOf('json') !== -1 || ct.indexOf('text') !== -1 || reqUrl.toLowerCase().indexOf('report') !== -1 || reqUrl.toLowerCase().indexOf('vhr') !== -1) {
+                                        resp.clone().text().then(function(txt) { storePayload(reqUrl, txt); }).catch(function(){});
+                                    }
+                                } catch (e) {}
+                                return resp;
+                            });
+                        };
+                    }
+                    if (window.XMLHttpRequest) {
+                        var origOpen = XMLHttpRequest.prototype.open;
+                        var origSend = XMLHttpRequest.prototype.send;
+                        XMLHttpRequest.prototype.open = function(method, url) {
+                            this.__encanUrl = url;
+                            return origOpen.apply(this, arguments);
+                        };
+                        XMLHttpRequest.prototype.send = function() {
+                            this.addEventListener('load', function() {
+                                try {
+                                    if (this.responseType === '' || this.responseType === 'text') {
+                                        storePayload(this.__encanUrl || '', this.responseText || '');
+                                    }
+                                } catch (e) {}
+                            });
+                            return origSend.apply(this, arguments);
+                        };
+                    }
+                }
+
+                // Gently dismiss cookie consent banners if present (non-destructive)
+                var cookieSelectors = [
+                    '#onetrust-accept-btn-handler',
+                    'button[id*="accept" i]',
+                    'button[class*="accept-all" i]'
+                ];
+                for (var s = 0; s < cookieSelectors.length; s++) {
+                    var btn = document.querySelector(cookieSelectors[s]);
+                    if (btn && btn.offsetParent !== null) {
+                        btn.click();
+                        break;
+                    }
+                }
+            } catch (e) {}
+        })();
+    """.trimIndent()
+
+    /**
+     * Extracts visible DOM text (including open Shadow DOM & same-origin iframes)
+     * plus any intercepted CARFAX JSON API payloads.
+     */
+    val CARFAX_EXTRACT_JS: String = """
+        (function() {
+            try {
+                var collectText = function(node) {
+                    if (!node) return '';
+                    var out = '';
+                    try {
+                        if (node.innerText && node.innerText.trim().length > 0) {
+                            out += node.innerText + '\n';
+                        } else if (node.textContent && node.textContent.trim().length > 0) {
+                            out += node.textContent + '\n';
+                        }
+                    } catch (e) {}
+                    try {
+                        var all = node.querySelectorAll ? node.querySelectorAll('*') : [];
+                        for (var i = 0; i < all.length && i < 400; i++) {
+                            if (all[i].shadowRoot) {
+                                out += collectText(all[i].shadowRoot) + '\n';
+                            }
+                        }
+                    } catch (e) {}
+                    return out;
+                };
+
+                var domText = collectText(document.body);
+                try {
+                    var frames = document.querySelectorAll('iframe');
+                    for (var f = 0; f < frames.length; f++) {
+                        try {
+                            var doc = frames[f].contentDocument;
+                            if (doc && doc.body) {
+                                domText += '\n' + collectText(doc.body);
+                            }
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+
+                var payloads = [];
+                if (Array.isArray(window.__encanCarfaxPayloads)) {
+                    for (var p = 0; p < window.__encanCarfaxPayloads.length; p++) {
+                        payloads.push(window.__encanCarfaxPayloads[p].body || '');
+                    }
+                }
+
+                return JSON.stringify({
+                    domText: domText.slice(0, 24000),
+                    apiPayloads: payloads,
+                    title: document.title || '',
+                    readyState: document.readyState || ''
+                });
+            } catch (e) {
+                return JSON.stringify({ domText: '', apiPayloads: [], title: '', readyState: '' });
+            }
+        })();
+    """.trimIndent()
+
+    suspend fun tryDirectHttpFetch(url: String): CarfaxReadResult = withContext(Dispatchers.IO) {
+        val cleanUrl = url.trim()
         if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
-            return CarfaxReadResult()
+            return@withContext CarfaxReadResult()
         }
-
-        // Layer 1: Direct HTTP check (detects PDF reports immediately & reads static HTML reports)
-        val httpResult = tryDirectHttpFetch(cleanUrl)
-        if (httpResult.hasContent) {
-            Log.d(TAG, "Read CARFAX/inspection report via ${httpResult.sourceMethod}")
-            return httpResult
-        }
-
-        // Layer 2: Headless Chromium WebView for JS/reCAPTCHA SPA reports (e.g. vhr.carfax.ca)
-        val renderedText = tryRenderWithHeadlessWebView(context, cleanUrl, timeoutMs)
-        if (!renderedText.isNullOrBlank()) {
-            Log.d(TAG, "Read CARFAX report via WebView (${renderedText.length} chars)")
-            return CarfaxReadResult(
-                extractedText = condenseCarfaxText(renderedText),
-                pdfBytes = null,
-                sourceMethod = "WebView"
-            )
-        }
-
-        return CarfaxReadResult()
-    }
-
-    private suspend fun tryDirectHttpFetch(url: String): CarfaxReadResult = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
-                .url(url)
+                .url(cleanUrl)
                 .header("User-Agent", AuctionHttpClient.BROWSER_USER_AGENT)
                 .header("Accept", "application/pdf,text/html,application/xhtml+xml,*/*;q=0.8")
                 .header("Accept-Language", "fr-CA,fr;q=0.9,en-CA;q=0.8,en;q=0.7")
@@ -89,7 +223,7 @@ object CarfaxReportReader {
                 val body = response.body ?: return@withContext CarfaxReadResult()
 
                 // Check if this is a PDF CARFAX / inspection report -> pass native PDF bytes to Gemini
-                if ("application/pdf" in contentType || url.lowercase().substringBefore('?').endsWith(".pdf")) {
+                if ("application/pdf" in contentType || cleanUrl.lowercase().substringBefore('?').endsWith(".pdf")) {
                     val bytes = body.bytes()
                     val isPdfMagic = bytes.size >= 5 &&
                         bytes[0] == '%'.code.toByte() &&
@@ -111,7 +245,7 @@ object CarfaxReportReader {
                 source.request(700_000L)
                 val buffer = source.buffer.clone()
                 val html = buffer.readUtf8(minOf(buffer.size, 700_000L))
-                val doc = Jsoup.parse(html, url)
+                val doc = Jsoup.parse(html, cleanUrl)
                 doc.select("script, style, noscript, svg, nav, footer").remove()
                 val visibleText = doc.body()?.text().orEmpty()
                     .replace(Regex("""\s+"""), " ")
@@ -128,124 +262,113 @@ object CarfaxReportReader {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Direct HTTP CARFAX fetch failed for $url: ${e.message}")
+            Log.d(TAG, "Direct HTTP CARFAX fetch skipped for $cleanUrl: ${e.message}")
             CarfaxReadResult()
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun tryRenderWithHeadlessWebView(
-        context: Context,
-        url: String,
-        timeoutMs: Long
-    ): String? = withTimeoutOrNull(timeoutMs) {
-        withContext(Dispatchers.Main) {
-            var webView: WebView? = null
-            try {
-                webView = WebView(context.applicationContext).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.databaseEnabled = true
-                    settings.loadsImagesAutomatically = false
-                    settings.blockNetworkImage = true
-                    settings.useWideViewPort = true
-                    settings.loadWithOverviewMode = true
-                    settings.cacheMode = WebSettings.LOAD_DEFAULT
-                    // Keep the genuine Chromium engine version (remove only "; wv") for reCAPTCHA v3 compatibility
-                    val nativeUa = settings.userAgentString.orEmpty()
-                    if (nativeUa.isNotBlank()) {
-                        settings.userAgentString = nativeUa.replace("; wv)", ")")
-                    }
-                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): Boolean = false
-                    }
-                    // Give the offscreen WebView real viewport bounds so responsive SPAs & IntersectionObservers render
-                    measure(
-                        android.view.View.MeasureSpec.makeMeasureSpec(1080, android.view.View.MeasureSpec.EXACTLY),
-                        android.view.View.MeasureSpec.makeMeasureSpec(2400, android.view.View.MeasureSpec.EXACTLY)
-                    )
-                    layout(0, 0, 1080, 2400)
-                }
-                runCatching {
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-                }
-
-                webView.loadUrl(url)
-
-                // Wait for SPA bootstrap + reCAPTCHA v3 + report API fetch
-                delay(1_800L)
-                var bestText = ""
-                var renderedHits = 0
-                var scrolled = false
-                val maxPolls = ((timeoutMs - 2_000L) / 700L).toInt().coerceIn(5, 20)
-
-                for (poll in 0 until maxPolls) {
-                    val text = evaluateBodyText(webView)
-                    if (text.length > bestText.length) {
-                        bestText = text
-                    }
-                    if (isCarfaxRendered(text)) {
-                        renderedHits++
-                        if (!scrolled) {
-                            scrolled = true
-                            // Trigger any lazy-loaded Detailed History / Service Record sections
-                            webView.evaluateJavascript(
-                                "try{window.scrollTo(0, document.body.scrollHeight);}catch(e){}",
-                                null
-                            )
-                        }
-                        // Give CARFAX 1 extra beat so Detailed History / Service rows finish rendering
-                        if (renderedHits >= 2 && text.length >= 1_200) {
-                            return@withContext if (text.length >= bestText.length) text else bestText
+    fun parseExtractionPayload(rawJsResult: String?): CarfaxExtractedSnapshot {
+        val decoded = decodeJsString(rawJsResult)
+        if (decoded.isBlank()) {
+            return CarfaxExtractedSnapshot("", hasApiPayload = false, isCarfaxReady = false, rawCharCount = 0)
+        }
+        return try {
+            val obj = JSONObject(decoded)
+            val domText = obj.optString("domText", "").trim()
+            val apiArr = obj.optJSONArray("apiPayloads")
+            val apiSummary = StringBuilder()
+            var hasApi = false
+            if (apiArr != null) {
+                for (i in 0 until apiArr.length()) {
+                    val rawPayload = apiArr.optString(i, "").trim()
+                    if (rawPayload.length >= 250) {
+                        val readable = flattenJsonToReadableLines(rawPayload)
+                        if (readable.isNotBlank()) {
+                            hasApi = true
+                            apiSummary.appendLine(readable)
                         }
                     }
-                    delay(700L)
-                }
-
-                if (isCarfaxRendered(bestText) || bestText.length >= 500) {
-                    bestText
-                } else {
-                    null
-                }
-            } catch (e: Throwable) {
-                Log.w(TAG, "Headless WebView CARFAX render unavailable: ${e.message}")
-                null
-            } finally {
-                runCatching {
-                    webView?.stopLoading()
-                    webView?.loadUrl("about:blank")
-                    webView?.clearHistory()
-                    webView?.removeAllViews()
-                    webView?.destroy()
                 }
             }
+
+            val combined = buildString {
+                if (domText.isNotBlank()) {
+                    appendLine(domText)
+                }
+                if (apiSummary.isNotBlank()) {
+                    appendLine("=== DONNÉES STRUCTURÉES CARFAX ===")
+                    append(apiSummary.toString())
+                }
+            }.trim()
+
+            val ready = isCarfaxRendered(combined) || (hasApi && apiSummary.length >= 350)
+            CarfaxExtractedSnapshot(
+                combinedText = combined,
+                hasApiPayload = hasApi,
+                isCarfaxReady = ready,
+                rawCharCount = combined.length
+            )
+        } catch (_: Exception) {
+            val ready = isCarfaxRendered(decoded)
+            CarfaxExtractedSnapshot(
+                combinedText = decoded,
+                hasApiPayload = false,
+                isCarfaxReady = ready,
+                rawCharCount = decoded.length
+            )
         }
     }
 
-    private suspend fun evaluateBodyText(webView: WebView): String =
-        suspendCancellableCoroutine { cont ->
-            val script = """
-                (function() {
-                    try {
-                        var bodyText = document.body ? (document.body.innerText || document.body.textContent || '') : '';
-                        var root = document.querySelector('main, #app, #root, app-root, .report-container');
-                        var rootText = root ? (root.innerText || root.textContent || '') : '';
-                        return rootText.length > bodyText.length * 0.6 ? rootText : bodyText;
-                    } catch (e) {
-                        return '';
+    internal fun flattenJsonToReadableLines(rawJson: String, maxChars: Int = 4_000): String {
+        val trimmed = rawJson.trim()
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+            return if (isCarfaxRendered(trimmed)) trimmed.take(maxChars) else ""
+        }
+        val out = StringBuilder()
+        fun walk(value: Any?, prefix: String, depth: Int) {
+            if (out.length >= maxChars || depth > 7 || value == null || value === JSONObject.NULL) return
+            when (value) {
+                is JSONObject -> {
+                    val keys = value.keys()
+                    while (keys.hasNext() && out.length < maxChars) {
+                        val key = keys.next()
+                        val child = value.opt(key)
+                        val lowerKey = key.lowercase()
+                        if (lowerKey in setOf("svg", "icon", "css", "style", "token", "recaptcha", "signature", "hash", "imageurl", "logo")) {
+                            continue
+                        }
+                        val nextPrefix = if (prefix.isEmpty()) key else "$prefix.$key"
+                        walk(child, nextPrefix, depth + 1)
                     }
-                })();
-            """.trimIndent()
-            webView.evaluateJavascript(script) { raw ->
-                val decoded = decodeJsString(raw)
-                if (cont.isActive) cont.resume(decoded)
+                }
+                is JSONArray -> {
+                    val limit = minOf(value.length(), 45)
+                    for (i in 0 until limit) {
+                        if (out.length >= maxChars) break
+                        walk(value.opt(i), prefix, depth + 1)
+                    }
+                }
+                is String -> {
+                    val v = value.replace(Regex("""\s+"""), " ").trim()
+                    if (v.isNotEmpty() && v.length <= 280 && !v.startsWith("http") && !v.startsWith("data:")) {
+                        val shortKey = prefix.substringAfterLast('.')
+                        out.append(shortKey).append(": ").appendLine(v)
+                    }
+                }
+                is Number, is Boolean -> {
+                    val shortKey = prefix.substringAfterLast('.')
+                    out.append(shortKey).append(": ").appendLine(value.toString())
+                }
             }
         }
+        return try {
+            val parsed: Any = if (trimmed.startsWith("{")) JSONObject(trimmed) else JSONArray(trimmed)
+            walk(parsed, "", 0)
+            out.toString().trim().take(maxChars)
+        } catch (_: Exception) {
+            ""
+        }
+    }
 
     internal fun decodeJsString(raw: String?): String {
         if (raw.isNullOrBlank() || raw == "null") return ""
@@ -258,13 +381,14 @@ object CarfaxReportReader {
 
     internal fun isCarfaxRendered(text: String): Boolean {
         val cleaned = text.trim()
-        if (cleaned.length < 300) return false
+        if (cleaned.length < 280) return false
         val lower = cleaned.lowercase()
         // Reject pure loading/bot/JS-disabled screens
-        if (cleaned.length < 450 && (
+        if (cleaned.length < 500 && (
                 "enable javascript" in lower ||
                     "please wait" in lower ||
                     "checking your browser" in lower ||
+                    "verify you are human" in lower ||
                     "loading report" in lower
                 )
         ) {
@@ -274,7 +398,7 @@ object CarfaxReportReader {
         return matchedSignals >= 3
     }
 
-    internal fun condenseCarfaxText(raw: String, maxChars: Int = 5_500): String {
+    internal fun condenseCarfaxText(raw: String, maxChars: Int = 6_000): String {
         val filtered = raw.lines()
             .map { it.replace(Regex("""\s+"""), " ").trim() }
             .filter { it.length >= 2 }
@@ -286,7 +410,6 @@ object CarfaxReportReader {
                     lower.startsWith("terms of use")
             }
 
-        // Collapse only consecutive duplicate lines so repeated provinces/statuses under different dates remain intact
         val deduped = ArrayList<String>(filtered.size)
         for (line in filtered) {
             if (deduped.lastOrNull() != line) {

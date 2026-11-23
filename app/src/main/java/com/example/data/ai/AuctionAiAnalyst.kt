@@ -85,7 +85,10 @@ class AuctionAiAnalyst {
                     1. Compare le COÛT RÉEL TOTAL (mise actuelle + frais d'acheteur + taxes provinciales) aux prix réalistes du marché canadien (AutoTrader.ca, Kijiji, Facebook Marketplace Canada, Amazon.ca, BestBuy.ca).
                     2. Calcule une mise maximale conseillée AVANT frais et taxes en gardant une marge pour les risques « tel quel / as-is ».
                     3. Lis les détails de la page officielle (défauts, pièces manquantes, boîte ouverte, verrouillage iCloud/IMEI, frais).
-                    4. Pour un véhicule : si le rapport CARFAX (texte complet ou PDF joint) a été lu, fais une synthèse PRÉCISE et CHIFFRÉE du rapport : nombre d'accidents/sinistres avec dates et montants en $ CAD, statut du titre/branding (Normal, Salvage, Rebuilt, VGA, Volé), liens financiers (Lien Check), évolution du kilométrage (cohérence / risque de recul), dossiers d'entretien, historique USA/importation et rappels ouverts. N'invente jamais de données CARFAX absentes.
+                    4. Pour un véhicule :
+                       - Si le rapport CARFAX (texte complet ou PDF joint) a été lu, fais une synthèse PRÉCISE et CHIFFRÉE : nombre d'accidents/sinistres avec dates et montants en $ CAD, statut du titre/branding (Normal, Salvage, Rebuilt, VGA, Volé), liens financiers, évolution du kilométrage, dossiers d'entretien, historique USA/importation et rappels ouverts.
+                       - Si des données officielles NIV / Transports Canada / NHTSA (décodage constructeur vPIC, rappels de sécurité, plaintes mécaniques connues) sont fournies, vérifie la cohérence avec le titre de l'annonce (année, motorisation, traction AWD/FWD, version), résume les rappels de sécurité et les points faibles mécaniques connus du modèle, et intègre-les dans carfaxAnalysis, redFlags et recommendedMaxBidCad.
+                       - Si aucun CARFAX n'est disponible, précise clairement ce qui a été vérifié par le NIV officiel et indique les vérifications canadiennes prioritaires (CIPC/GRC vol au Canada, registre provincial SAAQ/MTO UVIP/Alberta/ICBC, RDPRM/PPSA). N'invente jamais de données absentes.
                     5. Réponds uniquement en JSON conforme au schéma fourni.
                     """.trimIndent()
                 )
@@ -102,10 +105,10 @@ class AuctionAiAnalyst {
         onProgress("3/4 — Vérification App Check…")
         verifyAppCheckToken()
 
-        val aiStage = if (evidence.carfaxReadDirectly) {
-            "4/4 — Analyse IA du rapport CARFAX, du prix Canada et des risques…"
-        } else {
-            "4/4 — Connexion à Gemini (analyse prix Canada & détails)…"
+        val aiStage = when {
+            evidence.carfaxReadDirectly -> "4/4 — Analyse IA du CARFAX, du NIV Canada et du prix…"
+            evidence.vinLookup != null -> "4/4 — Analyse IA du dossier NIV, rappels Canada & prix…"
+            else -> "4/4 — Connexion à Gemini (analyse prix Canada & détails)…"
         }
         onProgress(aiStage)
         val promptText = buildPrompt(lot, evidence)
@@ -214,11 +217,11 @@ class AuctionAiAnalyst {
                 appendLine(evidence.fullListingText.take(1500))
             }
 
-            if (isVehicle || evidence.carfaxUrl != null || evidence.carfaxReadDirectly) {
+            if (isVehicle || evidence.carfaxUrl != null || evidence.carfaxReadDirectly || evidence.vinLookup != null) {
                 appendLine()
-                appendLine("=== RAPPORT CARFAX / HISTORIQUE VÉHICULE ===")
-                appendLine("Lien CARFAX : ${evidence.carfaxUrl ?: "Aucun lien public trouvé"}")
-                appendLine("Rapport lu directement : ${if (evidence.carfaxReadDirectly) "OUI (${evidence.carfaxSourceMethod ?: "Direct"})" else "NON"}")
+                appendLine("=== RAPPORT CARFAX & DOSSIER NIV / SÉCURITÉ CANADA ===")
+                appendLine("Lien CARFAX : ${evidence.carfaxUrl ?: "Aucun rapport CARFAX joint à l'annonce"}")
+                appendLine("Rapport CARFAX lu directement : ${if (evidence.carfaxReadDirectly) "OUI (${evidence.carfaxSourceMethod ?: "Direct"})" else "NON"}")
                 when {
                     !evidence.carfaxReportText.isNullOrBlank() -> {
                         appendLine("CONTENU COMPLET DU RAPPORT CARFAX LU EN DIRECT :")
@@ -228,7 +231,13 @@ class AuctionAiAnalyst {
                         appendLine("Le rapport CARFAX / d'inspection officiel au format PDF est joint directement à ce message — lis-le intégralement.")
                     }
                     !evidence.carfaxAccessNote.isNullOrBlank() -> appendLine(evidence.carfaxAccessNote)
-                    else -> appendLine("Aucun rapport CARFAX public joint à l'annonce.")
+                    else -> appendLine("Aucun rapport CARFAX public joint à l'annonce : base-toi sur le dossier NIV officiel et les rappels ci-dessous.")
+                }
+
+                evidence.vinLookup?.let { vinInfo ->
+                    appendLine()
+                    appendLine("=== DONNÉES OFFICIELLES NIV, RAPPELS & FIABILITÉ (CANADA / NA) ===")
+                    appendLine(vinInfo.toPromptSummary())
                 }
             }
         }
@@ -274,6 +283,7 @@ class AuctionAiAnalyst {
                 detectedMileage = evidence.detectedMileage,
                 scrapedOfficialPage = evidence.scrapedSuccessfully,
                 carfaxReadDirectly = evidence.carfaxReadDirectly,
+                vinLookup = evidence.vinLookup,
                 pros = readStringList("pros"),
                 redFlags = readStringList("redFlags"),
                 verificationChecklist = readStringList("verificationChecklist")

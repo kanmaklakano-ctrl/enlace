@@ -74,6 +74,7 @@ import com.example.model.FavoriteLotItem
 import com.example.ui.components.AuctionPhotoPlaceholder
 import com.example.ui.components.AuctionStudyCard
 import com.example.ui.components.BrowserLauncher
+import com.example.ui.components.CarfaxReaderDialog
 import com.example.ui.components.FormatUtils
 import com.example.ui.theme.LiveEmerald
 import com.example.ui.theme.MonoFontFamily
@@ -86,6 +87,7 @@ fun AuctionDetailScreen(
     studyState: AuctionStudyUiState,
     onBack: () -> Unit,
     onStudyLot: (AuctionLot, Boolean) -> Unit,
+    onAnalyzeCapturedCarfax: (AuctionLot, String) -> Unit,
     onToggleFavorite: (AuctionLot) -> Unit,
     onSaveFavoriteNotes: (lotId: String, maxBid: String, note: String) -> Unit,
     onOpenInCalculator: (AuctionLot) -> Unit,
@@ -135,6 +137,7 @@ fun AuctionDetailScreen(
     var personalNote by remember(favoriteItem?.lot?.id, favoriteItem?.personalNote) {
         mutableStateOf(favoriteItem?.personalNote ?: "")
     }
+    var inAppCarfaxUrl by remember(lot.id) { mutableStateOf<String?>(null) }
 
     Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         LazyColumn(
@@ -357,6 +360,7 @@ fun AuctionDetailScreen(
                     onStartStudy = { onStudyLot(lot, false) },
                     onRefreshStudy = { onStudyLot(lot, true) },
                     onOpenUrl = { url -> BrowserLauncher.openAuctionUrl(context, url) },
+                    onOpenInAppCarfax = { url -> inAppCarfaxUrl = url },
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
             }
@@ -622,6 +626,20 @@ fun AuctionDetailScreen(
                 }
             }
         }
+    }
+
+    inAppCarfaxUrl?.let { reportUrl ->
+        CarfaxReaderDialog(
+            url = reportUrl,
+            onDismiss = { inAppCarfaxUrl = null },
+            onAnalyzeCapturedCarfax = { capturedText ->
+                inAppCarfaxUrl = null
+                onAnalyzeCapturedCarfax(lot, capturedText)
+            },
+            onOpenExternal = { externalUrl ->
+                BrowserLauncher.openAuctionUrl(context, externalUrl)
+            }
+        )
     }
 }
 

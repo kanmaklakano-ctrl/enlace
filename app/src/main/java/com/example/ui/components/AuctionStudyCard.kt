@@ -1,10 +1,17 @@
 package com.example.ui.components
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,11 +25,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FactCheck
+import androidx.compose.material.icons.filled.GppGood
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -43,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +73,7 @@ fun AuctionStudyCard(
     onStartStudy: () -> Unit,
     onRefreshStudy: () -> Unit,
     onOpenUrl: (String) -> Unit,
+    onOpenInAppCarfax: (String) -> Unit = onOpenUrl,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -85,7 +98,8 @@ fun AuctionStudyCard(
             is AuctionStudyUiState.Success -> SuccessStudyContent(
                 report = studyState.report,
                 onRefreshStudy = onRefreshStudy,
-                onOpenUrl = onOpenUrl
+                onOpenUrl = onOpenUrl,
+                onOpenInAppCarfax = onOpenInAppCarfax
             )
             is AuctionStudyUiState.Error -> ErrorStudyContent(
                 message = studyState.message,
@@ -256,12 +270,15 @@ private fun ErrorStudyContent(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SuccessStudyContent(
     report: AuctionStudyReport,
     onRefreshStudy: () -> Unit,
-    onOpenUrl: (String) -> Unit
+    onOpenUrl: (String) -> Unit,
+    onOpenInAppCarfax: (String) -> Unit
 ) {
+    val context = LocalContext.current
     val accent = verdictColor(report.verdict)
 
     Column(
@@ -419,11 +436,13 @@ private fun SuccessStudyContent(
             body = report.conditionSummary
         )
 
-        // Vehicle & CARFAX section when applicable
+        // Vehicle, Canadian VIN Lookup & CARFAX section when applicable
+        val vinLookup = report.vinLookup
         val hasVehicleInfo = report.carfaxAnalysis.isNotBlank() ||
             !report.carfaxUrl.isNullOrBlank() ||
             !report.detectedVin.isNullOrBlank() ||
-            !report.detectedMileage.isNullOrBlank()
+            !report.detectedMileage.isNullOrBlank() ||
+            vinLookup != null
 
         if (hasVehicleInfo) {
             Surface(
@@ -447,7 +466,7 @@ private fun SuccessStudyContent(
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
-                            text = "Véhicule, NIV & Rapport CARFAX",
+                            text = "Véhicule, NIV & Dossier Canada",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -472,26 +491,62 @@ private fun SuccessStudyContent(
                         }
                     }
 
-                    if (!report.detectedVin.isNullOrBlank() || !report.detectedMileage.isNullOrBlank()) {
+                    if (vinLookup != null) {
                         Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.GppGood,
+                                contentDescription = null,
+                                tint = LiveEmerald,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Vérifié automatiquement : ${vinLookup.lookupSourceLabel}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = LiveEmerald
+                            )
+                        }
+                    }
+
+                    if (!report.detectedVin.isNullOrBlank() || !report.detectedMileage.isNullOrBlank()) {
+                        FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             report.detectedVin?.let { vin ->
                                 Surface(
                                     color = MaterialTheme.colorScheme.surface,
                                     shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    modifier = Modifier
+                                        .clickable {
+                                            copyVinToClipboard(context, vin)
+                                        }
+                                        .testTag("copy_vin_chip")
                                 ) {
-                                    Text(
-                                        text = "NIV : $vin",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontFamily = MonoFontFamily,
-                                            fontWeight = FontWeight.SemiBold
-                                        ),
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Text(
+                                            text = "NIV : $vin",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontFamily = MonoFontFamily,
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Filled.ContentCopy,
+                                            contentDescription = "Copier le NIV",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
                                 }
                             }
                             report.detectedMileage?.let { km ->
@@ -511,6 +566,118 @@ private fun SuccessStudyContent(
                                     )
                                 }
                             }
+                            if (vinLookup?.manufacturedInCanada == true) {
+                                Surface(
+                                    color = LiveEmerald.copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, LiveEmerald.copy(alpha = 0.4f))
+                                ) {
+                                    Text(
+                                        text = "Fabriqué au Canada",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = LiveEmerald,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Decoded factory VIN specs + Recalls & Complaints badges
+                    if (vinLookup != null) {
+                        val specs = vinLookup.compactSpecsLine()
+                        if (specs.isNotBlank()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = specs,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                                )
+                            }
+                        }
+
+                        if (vinLookup.recallsChecked || vinLookup.complaintsCount > 0) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (vinLookup.recallsChecked) {
+                                    val recallColor = if (vinLookup.recalls.isEmpty()) LiveEmerald else BurnishedBrass
+                                    Surface(
+                                        color = recallColor.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, recallColor.copy(alpha = 0.35f)),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Shield,
+                                                contentDescription = null,
+                                                tint = recallColor,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = if (vinLookup.recalls.isEmpty()) {
+                                                    "0 rappel sécurité"
+                                                } else {
+                                                    "${vinLookup.recalls.size} rappel(s) sécurité"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = recallColor
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (vinLookup.complaintsCount > 0) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surface,
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Build,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = "${vinLookup.complaintsCount} plainte(s) connues",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (vinLookup.recalls.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    vinLookup.recalls.take(2).forEach { recall ->
+                                        Text(
+                                            text = "• [${recall.source} ${recall.campaignNumber}] ${recall.component}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -522,41 +689,88 @@ private fun SuccessStudyContent(
                         )
                     }
 
-                    if (!report.carfaxUrl.isNullOrBlank() || !report.inspectionReportUrl.isNullOrBlank()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            report.carfaxUrl?.let { url ->
-                                Button(
-                                    onClick = { onOpenUrl(url) },
-                                    shape = RoundedCornerShape(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                                    modifier = Modifier.testTag("open_carfax_report_button")
-                                ) {
-                                    Text(
-                                        text = stringResource(R.string.open_carfax_report),
-                                        style = MaterialTheme.typography.labelLarge
-                                    )
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                }
+                    // Primary CARFAX / Inspection & Canadian Official Registry Actions
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        report.carfaxUrl?.let { url ->
+                            Button(
+                                onClick = { onOpenInAppCarfax(url) },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.testTag("open_carfax_report_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (report.carfaxReadDirectly) Icons.Filled.DirectionsCar else Icons.Filled.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = stringResource(
+                                        if (report.carfaxReadDirectly) {
+                                            R.string.view_carfax_report
+                                        } else {
+                                            R.string.read_and_analyze_carfax
+                                        }
+                                    ),
+                                    style = MaterialTheme.typography.labelLarge
+                                )
                             }
-                            report.inspectionReportUrl?.let { url ->
-                                OutlinedButton(
-                                    onClick = { onOpenUrl(url) },
-                                    shape = RoundedCornerShape(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                                ) {
-                                    Text("Inspection", style = MaterialTheme.typography.labelLarge)
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                }
+                        }
+                        report.inspectionReportUrl?.let { url ->
+                            OutlinedButton(
+                                onClick = { onOpenInAppCarfax(url) },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text("Inspection", style = MaterialTheme.typography.labelLarge)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
+                        if (vinLookup != null) {
+                            OutlinedButton(
+                                onClick = {
+                                    report.detectedVin?.let { copyVinToClipboard(context, it, silent = true) }
+                                    onOpenUrl(vinLookup.cpicStolenCheckUrl)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                                modifier = Modifier.testTag("open_cpic_stolen_check_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Shield,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text("Vol CIPC (GRC)", style = MaterialTheme.typography.labelMedium)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    report.detectedVin?.let { copyVinToClipboard(context, it, silent = true) }
+                                    onOpenUrl(vinLookup.provincialRegistryUrl)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                                modifier = Modifier.testTag("open_provincial_registry_button")
+                            ) {
+                                Text(
+                                    text = vinLookup.provincialRegistryLabel.substringBefore(" ("),
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
                             }
                         }
                     }
@@ -697,5 +911,18 @@ private fun verdictColor(verdict: DealVerdict): Color {
         DealVerdict.PRIX_CORRECT -> BurnishedBrass
         DealVerdict.RISQUE -> Color(0xFFD96B27)
         DealVerdict.TROP_CHER -> MaterialTheme.colorScheme.error
+    }
+}
+
+private fun copyVinToClipboard(context: Context, vin: String, silent: Boolean = false) {
+    runCatching {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("NIV EncanLive", vin))
+        val msg = if (silent) {
+            "NIV copié ($vin) — collez-le dans la page officielle"
+        } else {
+            "NIV copié : $vin"
+        }
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 }

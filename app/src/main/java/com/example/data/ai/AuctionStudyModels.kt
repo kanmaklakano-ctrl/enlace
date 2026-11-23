@@ -33,7 +33,8 @@ data class ScrapedLotEvidence(
     val carfaxSourceMethod: String? = null,
     val carfaxAccessNote: String? = null,
     val inspectionReportUrl: String? = null,
-    val pageBuyersPremiumHint: String? = null
+    val pageBuyersPremiumHint: String? = null,
+    val vinLookup: VinLookupSummary? = null
 )
 
 data class AuctionStudyReport(
@@ -53,6 +54,7 @@ data class AuctionStudyReport(
     val detectedMileage: String?,
     val scrapedOfficialPage: Boolean,
     val carfaxReadDirectly: Boolean = false,
+    val vinLookup: VinLookupSummary? = null,
     val pros: List<String>,
     val redFlags: List<String>,
     val verificationChecklist: List<String>,

@@ -142,5 +142,46 @@ class ExampleRobolectricTest {
         val condensed = com.example.data.ai.CarfaxReportReader.condenseCarfaxText(renderedCarfax)
         assertTrue(condensed.contains("49,651.00"))
         assertTrue(!condensed.lines().contains("Print"))
+
+        val apiJson = """
+            {"vin":"WP0CA2A91HS142067","branding":"Normal","accidents":[{"date":"2018-12-14","province":"Ontario","claimAmount":"49651.00","type":"Collision Front Right"}],"odometer":"100095 km","serviceRecordsCount":21,"openRecalls":0,"stolen":false,"lienStatus":"No active lien"}
+        """.trimIndent()
+        val wrapped = org.json.JSONObject()
+            .put("domText", "CARFAX Canada Vehicle History Report")
+            .put("apiPayloads", org.json.JSONArray().put(apiJson))
+            .put("title", "CARFAX Canada")
+            .put("readyState", "complete")
+            .toString()
+        val jsStringQuoted = org.json.JSONObject.quote(wrapped)
+        val snapshot = com.example.data.ai.CarfaxReportReader.parseExtractionPayload(jsStringQuoted)
+        assertTrue("Expected intercepted CARFAX API payload to be parsed", snapshot.hasApiPayload)
+        assertTrue("Expected CARFAX snapshot to be marked ready", snapshot.isCarfaxReady)
+        assertTrue(snapshot.combinedText.contains("49651.00"))
+        assertTrue(snapshot.combinedText.contains("WP0CA2A91HS142067"))
+    }
+
+    @Test
+    fun liveCanadianVinLookupDecodesVehicleAndFetchesRecalls() = runBlocking {
+        // 1. Real 17-char VIN lookup (2017 Porsche 911 Carrera 4 Cabriolet)
+        val porsche = com.example.data.ai.CanadianVinLookupService.lookupVehicleIntelligence(
+            vin = "WP0CA2A91HS142067",
+            listingTitle = "2017 Porsche 911 Carrera 4 Cabriolet",
+            province = CanadianProvince.ON
+        )
+        println("VIN_LIVE_PORSCHE specs=${porsche?.compactSpecsLine()} valid=${porsche?.isVinValid} recalls=${porsche?.recalls?.size} tc=${porsche?.transportCanadaRecallsCount} complaints=${porsche?.complaintsCount} src=${porsche?.lookupSourceLabel}")
+        assertNotNull("Expected live vPIC VIN decode for Porsche", porsche)
+        assertTrue("Expected Porsche make decoded", porsche!!.make.contains("Porsche", ignoreCase = true))
+        assertEquals("2017", porsche.modelYear)
+        assertTrue("Expected recalls to be checked", porsche.recallsChecked)
+
+        // 2. Fallback Year/Make/Model lookup when NO 17-char VIN exists on listing (e.g. 2018 Mercedes-Benz GLC300)
+        val mercedes = com.example.data.ai.CanadianVinLookupService.lookupVehicleIntelligence(
+            vin = null,
+            listingTitle = "2018 Mercedes-Benz GLC300 AWD Sport Utility WDC0G4",
+            province = CanadianProvince.QC
+        )
+        println("VIN_LIVE_MERCEDES specs=${mercedes?.compactSpecsLine()} recalls=${mercedes?.recalls?.size} complaints=${mercedes?.complaintsCount} prov=${mercedes?.provincialRegistryLabel}")
+        assertNotNull("Expected fallback Year/Make/Model lookup for Mercedes", mercedes)
+        assertTrue("Expected SAAQ provincial registry for QC", mercedes!!.provincialRegistryLabel.contains("SAAQ"))
     }
 }
