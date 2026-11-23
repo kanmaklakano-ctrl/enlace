@@ -118,4 +118,29 @@ class ExampleRobolectricTest {
         )
         assertTrue("Expected lot URL to be valid", firstLot.auctionUrl.startsWith("https://"))
     }
+
+    @Test
+    fun carfaxReportReaderDetectsRenderedReportAndCondensesText() {
+        val loadingShell = "Loading report... Please wait"
+        assertTrue(!com.example.data.ai.CarfaxReportReader.isCarfaxRendered(loadingShell))
+
+        val renderedCarfax = """
+            CARFAX Canada Vehicle History Report
+            2017 PORSCHE 911 CARRERA 4 CABRIOLET
+            VIN: WP0CA2A91HS142067
+            Accident/Damage Records Found: 2018 Dec 14 - Ontario, Canada - Collision Front Right - Claim $49,651.00
+            Last Registered In: Ontario (Normal)
+            No Open Recalls Found
+            21 Service Records Found
+            Not Actively Declared Stolen
+            Last Odometer Reading: 100,095 km
+            Print
+            Share
+        """.trimIndent()
+
+        assertTrue(com.example.data.ai.CarfaxReportReader.isCarfaxRendered(renderedCarfax))
+        val condensed = com.example.data.ai.CarfaxReportReader.condenseCarfaxText(renderedCarfax)
+        assertTrue(condensed.contains("49,651.00"))
+        assertTrue(!condensed.lines().contains("Print"))
+    }
 }

@@ -83,33 +83,14 @@ object AuctionDetailScraper {
                 fullListingText = buildString {
                     if (embeddedStateText.isNotBlank()) {
                         append("[Données structurées de l'annonce]\n")
-                        append(embeddedStateText.take(2200))
+                        append(embeddedStateText.take(1000))
                         append("\n\n")
                     }
                     if (visibleText.isNotBlank()) {
                         append("[Contenu de la page officielle]\n")
-                        append(visibleText.take(4500))
+                        append(visibleText.take(1800))
                     }
                 }.trim()
-            }
-        }
-
-        // 4. If a CARFAX / vehicle history URL was found on the lot page, try fetching its public summary
-        var carfaxReportText: String? = null
-        var carfaxAccessNote: String? = null
-        if (!carfaxUrl.isNullOrBlank()) {
-            val carfaxHtml = fetchTextSafely(carfaxUrl, maxBytes = 700_000)
-            if (!carfaxHtml.isNullOrBlank()) {
-                val extracted = extractCarfaxSummary(carfaxHtml, carfaxUrl)
-                if (extracted.isNotBlank()) {
-                    carfaxReportText = extracted.take(3200)
-                    if (detectedVin == null) detectedVin = extractVin(extracted)
-                    if (detectedMileage == null) detectedMileage = extractMileage(extracted)
-                } else {
-                    carfaxAccessNote = "Lien CARFAX officiel détecté sur l'annonce, mais son contenu détaillé est chargé dynamiquement ou protégé ; consultez-le directement via le bouton CARFAX."
-                }
-            } else {
-                carfaxAccessNote = "Lien CARFAX officiel détecté sur l'annonce, mais inaccessible en lecture automatique ; ouvrez-le directement via le bouton CARFAX."
             }
         }
 
@@ -121,8 +102,11 @@ object AuctionDetailScraper {
             detectedMileage = detectedMileage,
             retailPriceHint = retailHint,
             carfaxUrl = carfaxUrl,
-            carfaxReportText = carfaxReportText,
-            carfaxAccessNote = carfaxAccessNote,
+            carfaxReportText = null,
+            carfaxPdfBytes = null,
+            carfaxReadDirectly = false,
+            carfaxSourceMethod = null,
+            carfaxAccessNote = null,
             inspectionReportUrl = inspectionUrl,
             pageBuyersPremiumHint = buyersPremiumHint
         )
@@ -150,12 +134,12 @@ object AuctionDetailScraper {
 
                 var sampleSize = 1
                 val maxDim = max(bounds.outWidth, bounds.outHeight)
-                while (maxDim / sampleSize > 1024) {
+                while (maxDim / sampleSize > 384) {
                     sampleSize *= 2
                 }
                 val decodeOpts = BitmapFactory.Options().apply {
                     inSampleSize = sampleSize
-                    inPreferredConfig = Bitmap.Config.RGB_565
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
                 }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
             }

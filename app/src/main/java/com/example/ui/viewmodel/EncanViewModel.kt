@@ -26,6 +26,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -376,27 +377,59 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
 
         activeStudyJobs[lot.id]?.cancel()
         activeStudyJobs[lot.id] = viewModelScope.launch {
-            _studyStates.update {
-                it + (lot.id to AuctionStudyUiState.Loading("Lecture de la page officielle & recherche CARFAX / NIV…"))
-            }
+            var lastStage = "1/4 — Lecture de la page officielle & recherche CARFAX / NIV…"
+            _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
             try {
-                val evidenceDeferred = async { AuctionDetailScraper.scrapeLotEvidence(lot) }
-                val photoDeferred = async { AuctionDetailScraper.downloadLotBitmapIfSmall(lot.imageUrl) }
+                val evidenceDeferred = async {
+                    withTimeoutOrNull(8_000L) { AuctionDetailScraper.scrapeLotEvidence(lot) }
+                        ?: com.example.data.ai.ScrapedLotEvidence()
+                }
+                val photoDeferred = async {
+                    withTimeoutOrNull(4_000L) { AuctionDetailScraper.downloadLotBitmapIfSmall(lot.imageUrl) }
+                }
 
-                val evidence = evidenceDeferred.await()
+                var evidence = evidenceDeferred.await()
                 val photoBitmap = photoDeferred.await()
 
-                val stageMsg = when {
-                    !evidence.carfaxUrl.isNullOrBlank() ->
-                        "Rapport CARFAX détecté — analyse du prix et de l'historique…"
-                    evidence.scrapedSuccessfully ->
-                        "Annonce officielle lue — comparaison avec le marché canadien…"
-                    else ->
-                        "Analyse IA du prix, des frais/taxes et du marché canadien…"
-                }
-                _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(stageMsg)) }
-
                 val appContext = getApplication<Application>()
+
+                // Step 2/4: If a CARFAX or official inspection report link exists, read its full content (PDF / HTTP / headless WebView)
+                val reportUrlToRead = evidence.carfaxUrl ?: evidence.inspectionReportUrl
+                if (!reportUrlToRead.isNullOrBlank()) {
+                    lastStage = if (evidence.carfaxUrl != null) {
+                        "2/4 — Rapport CARFAX trouvé ! Lecture complète en direct…"
+                    } else {
+                        "2/4 — Rapport d'inspection trouvé ! Lecture en direct…"
+                    }
+                    _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
+
+                    val carfaxResult = com.example.data.ai.CarfaxReportReader.readReport(
+                        context = appContext,
+                        reportUrl = reportUrlToRead,
+                        timeoutMs = 15_000L
+                    )
+                    evidence = if (carfaxResult.hasContent) {
+                        val extraVin = evidence.detectedVin ?: carfaxResult.extractedText?.let {
+                            AuctionDetailScraper.extractVin(it)
+                        }
+                        val extraKm = evidence.detectedMileage ?: carfaxResult.extractedText?.let {
+                            AuctionDetailScraper.extractMileage(it)
+                        }
+                        evidence.copy(
+                            carfaxReportText = carfaxResult.extractedText,
+                            carfaxPdfBytes = carfaxResult.pdfBytes,
+                            carfaxReadDirectly = true,
+                            carfaxSourceMethod = carfaxResult.sourceMethod,
+                            detectedVin = extraVin,
+                            detectedMileage = extraKm
+                        )
+                    } else {
+                        evidence.copy(
+                            carfaxAccessNote = "Lien CARFAX officiel détecté sur l'annonce, mais le site bloque la lecture automatique (protection anti-robot ou session expirée). Ouvrez-le via le bouton CARFAX."
+                        )
+                    }
+                }
+
                 val firebaseApp = FirebaseApp.getApps(appContext).firstOrNull()
                     ?: FirebaseApp.initializeApp(appContext)
                 if (firebaseApp == null) {
@@ -404,7 +437,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
                     _studyStates.update {
                         it + (
                             lot.id to AuctionStudyUiState.Error(
-                                "Configuration Firebase manquante dans cet APK (fichier app/google-services.json absent lors de la compilation sur GitHub). Ajoutez le secret GOOGLE_SERVICES_JSON dans GitHub Actions (ou app/google-services.json dans le dépôt) puis recompilez l'APK."
+                                "Configuration Firebase manquante dans cet APK (fichier app/google-services.json absent lors de la compilation sur GitHub). Ajoutez le secret GOOGLE_SERVICES_JSON dans GitHub Actions puis recompilez l'APK."
                             )
                         )
                     }
@@ -414,15 +447,19 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
                 val report = aiAnalyst.analyzeLot(
                     lot = lot,
                     evidence = evidence,
-                    photoBitmap = photoBitmap
+                    photoBitmap = photoBitmap,
+                    onProgress = { stage ->
+                        lastStage = stage
+                        _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(stage)) }
+                    }
                 )
                 _studyStates.update { it + (lot.id to AuctionStudyUiState.Success(report)) }
             } catch (e: TimeoutCancellationException) {
-                Log.e("EncanViewModel", "AI auction study timed out for ${lot.id}", e)
+                Log.e("EncanViewModel", "AI auction study timed out for ${lot.id} at stage: $lastStage", e)
                 _studyStates.update {
                     it + (
                         lot.id to AuctionStudyUiState.Error(
-                            "L'analyse IA a dépassé le délai de 60 secondes. Vérifiez votre connexion et réessayez."
+                            "Délai de 60 s dépassé pendant l'étape : « $lastStage ». Réessayez dans un instant."
                         )
                     )
                 }

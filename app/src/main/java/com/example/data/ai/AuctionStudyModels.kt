@@ -28,6 +28,9 @@ data class ScrapedLotEvidence(
     val retailPriceHint: String? = null,
     val carfaxUrl: String? = null,
     val carfaxReportText: String? = null,
+    val carfaxPdfBytes: ByteArray? = null,
+    val carfaxReadDirectly: Boolean = false,
+    val carfaxSourceMethod: String? = null,
     val carfaxAccessNote: String? = null,
     val inspectionReportUrl: String? = null,
     val pageBuyersPremiumHint: String? = null
@@ -49,6 +52,7 @@ data class AuctionStudyReport(
     val detectedVin: String?,
     val detectedMileage: String?,
     val scrapedOfficialPage: Boolean,
+    val carfaxReadDirectly: Boolean = false,
     val pros: List<String>,
     val redFlags: List<String>,
     val verificationChecklist: List<String>,

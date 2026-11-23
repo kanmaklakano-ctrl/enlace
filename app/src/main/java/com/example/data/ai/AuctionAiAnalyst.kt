@@ -10,9 +10,15 @@ import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.appcheck.FirebaseAppCheck
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 private const val TAG = "AuctionAiAnalyst"
 
@@ -25,47 +31,47 @@ class AuctionAiAnalyst {
                 description = "Verdict global de l'enchère au Canada"
             ),
             "dealScore" to Schema.integer(
-                description = "Score d'opportunité de 0 (très mauvais) à 100 (affaire exceptionnelle)"
+                description = "Score d'opportunité de 0 à 100"
             ),
             "headline" to Schema.string(
-                description = "Phrase verdict courte et directe en français (max 90 caractères)"
+                description = "Verdict court en français (max 90 caractères)"
             ),
             "estimatedMarketValueCad" to Schema.string(
-                description = "Valeur marchande réaliste au Canada en $ CAD (ex: 700 $ – 900 $ CAD)"
+                description = "Valeur marchande au Canada en $ CAD (ex: 700 $ – 900 $ CAD)"
             ),
             "recommendedMaxBidCad" to Schema.string(
-                description = "Mise maximale conseillée avant frais d'acheteur et taxes en $ CAD (ex: 520 $ CAD)"
+                description = "Mise maximale conseillée avant frais/taxes en $ CAD (ex: 520 $ CAD)"
             ),
             "estimatedProfitOrSavings" to Schema.string(
-                description = "Économie ou marge potentielle par rapport au coût total estimé actuel (ex: ~240 $ CAD sous le marché)"
+                description = "Économie ou marge potentielle (ex: ~240 $ CAD sous le marché)"
             ),
             "priceAnalysis" to Schema.string(
-                description = "Comparaison chiffrée entre le coût total actuel (mise + frais d'acheteur + taxes provinciales) et le marché canadien (AutoTrader.ca, Kijiji, Marketplace, Amazon.ca, BestBuy.ca)"
+                description = "Comparaison chiffrée entre le coût total actuel (mise + frais + taxes) et le marché canadien"
             ),
             "conditionSummary" to Schema.string(
-                description = "Synthèse honnête de l'état de l'objet d'après le texte complet de l'annonce officielle et la photo si fournie"
+                description = "Synthèse de l'état d'après la page officielle et la photo si fournie"
             ),
             "carfaxAnalysis" to Schema.string(
-                description = "Pour un véhicule : analyse du rapport CARFAX, du NIV et du kilométrage (ou consignes précises si aucun CARFAX public n'est fourni). Pour un non-véhicule : chaîne vide"
+                description = "Pour un véhicule : analyse CARFAX, NIV et kilométrage (ou consignes précises). Sinon chaîne vide"
             ),
             "pros" to Schema.array(
                 items = Schema.string(),
-                description = "2 à 4 points forts concrets de ce lot"
+                description = "2 à 4 points forts concrets"
             ),
             "redFlags" to Schema.array(
                 items = Schema.string(),
-                description = "1 à 4 risques, coûts cachés ou zones d'ombre à surveiller"
+                description = "1 à 4 risques ou points de vigilance"
             ),
             "verificationChecklist" to Schema.array(
                 items = Schema.string(),
-                description = "2 à 4 vérifications concrètes à faire avant de placer une mise"
+                description = "2 à 4 vérifications avant d'enchérir"
             )
         )
     )
 
     private val model by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = "gemini-3.5-flash-lite",
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = studyResponseSchema
@@ -74,15 +80,13 @@ class AuctionAiAnalyst {
             systemInstruction = content {
                 text(
                     """
-                    Tu es un expert canadien en évaluation d'enchères en ligne, revente, électronique, outillage, machinerie et automobiles d'occasion au Canada.
-                    Ton rôle est d'étudier une enchère réelle et d'aider l'acheteur à décider si c'est un bon deal ou non, en français clair, direct et honnête.
-                    Règles strictes :
-                    1. Compare toujours le COÛT RÉEL TOTAL (mise actuelle + frais d'acheteur + taxes de la province canadienne) par rapport au prix réaliste du marché canadien (Kijiji, Facebook Marketplace Canada, AutoTrader.ca, Amazon.ca, BestBuy.ca, HomeDepot.ca).
-                    2. Calcule une « mise maximale conseillée » réaliste AVANT frais et taxes pour que l'acheteur conserve une bonne marge de sécurité après frais d'acheteur, taxes et risques d'encan (« tel quel / as-is », pas de retour).
-                    3. Lis attentivement tous les détails extraits de la page officielle (défauts, pièces manquantes, boîte ouverte, retour client, état non testé, verrouillage iCloud/IMEI pour les téléphones, frais de manutention ou de ramassage).
-                    4. Pour les véhicules : examine le NIV (VIN), le kilométrage et le rapport CARFAX s'il a été lu. N'invente JAMAIS un historique CARFAX qui n'est pas présent dans les données fournies ; si seul le lien CARFAX ou le NIV est disponible, dis-le clairement et explique exactement quoi vérifier (accidents, statut Salvage/Rebuilt/VGA, lien financier PPSA/RDPRM, kilométrage, rappels, inspection mécanique provinciale).
-                    5. Si le prix actuel est absent ou très bas (début d'enchère), précise bien que le prix va probablement monter d'ici la clôture et base surtout ton conseil sur la mise maximale à ne pas dépasser.
-                    6. Réponds UNIQUEMENT en JSON conforme au schéma fourni.
+                    Tu es un expert canadien en évaluation d'enchères en ligne, électronique, outillage, machinerie et véhicules d'occasion au Canada.
+                    Réponds en français clair, concis et honnête.
+                    1. Compare le COÛT RÉEL TOTAL (mise actuelle + frais d'acheteur + taxes provinciales) aux prix réalistes du marché canadien (AutoTrader.ca, Kijiji, Facebook Marketplace Canada, Amazon.ca, BestBuy.ca).
+                    2. Calcule une mise maximale conseillée AVANT frais et taxes en gardant une marge pour les risques « tel quel / as-is ».
+                    3. Lis les détails de la page officielle (défauts, pièces manquantes, boîte ouverte, verrouillage iCloud/IMEI, frais).
+                    4. Pour un véhicule : si le rapport CARFAX (texte complet ou PDF joint) a été lu, fais une synthèse PRÉCISE et CHIFFRÉE du rapport : nombre d'accidents/sinistres avec dates et montants en $ CAD, statut du titre/branding (Normal, Salvage, Rebuilt, VGA, Volé), liens financiers (Lien Check), évolution du kilométrage (cohérence / risque de recul), dossiers d'entretien, historique USA/importation et rappels ouverts. N'invente jamais de données CARFAX absentes.
+                    5. Réponds uniquement en JSON conforme au schéma fourni.
                     """.trimIndent()
                 )
             }
@@ -92,34 +96,83 @@ class AuctionAiAnalyst {
     suspend fun analyzeLot(
         lot: AuctionLot,
         evidence: ScrapedLotEvidence,
-        photoBitmap: Bitmap?
-    ): AuctionStudyReport {
+        photoBitmap: Bitmap?,
+        onProgress: (String) -> Unit = {}
+    ): AuctionStudyReport = withContext(Dispatchers.IO) {
+        onProgress("3/4 — Vérification App Check…")
+        verifyAppCheckToken()
+
+        val aiStage = if (evidence.carfaxReadDirectly) {
+            "4/4 — Analyse IA du rapport CARFAX, du prix Canada et des risques…"
+        } else {
+            "4/4 — Connexion à Gemini (analyse prix Canada & détails)…"
+        }
+        onProgress(aiStage)
         val promptText = buildPrompt(lot, evidence)
-        val response = withTimeout(60_000L) {
+        val inputContent = content {
+            text(promptText)
+            if (evidence.carfaxPdfBytes != null && evidence.carfaxPdfBytes.isNotEmpty()) {
+                inlineData(evidence.carfaxPdfBytes, "application/pdf")
+                text("Lis intégralement ce rapport PDF officiel (CARFAX / inspection) ci-joint et intègre tous les accidents, montants, kilométrages, statuts et entretiens dans carfaxAnalysis et le verdict.")
+            }
             if (photoBitmap != null) {
-                model.generateContent(
-                    content {
-                        text(promptText)
-                        image(photoBitmap)
-                        text("Inspecte aussi visuellement cette photo du lot (état apparent, modèle, dommages visibles ou emballage) et intègre-la dans ton analyse.")
-                    }
-                )
-            } else {
-                model.generateContent(promptText)
+                image(photoBitmap)
+                text("Inspecte aussi visuellement cette photo du lot (état apparent, modèle, dommages visibles).")
             }
         }
 
-        val jsonText = response.text
-        if (jsonText.isNullOrBlank()) {
-            Log.e(TAG, "Gemini returned empty response for lot ${lot.id}")
+        val accumulatedJson = StringBuilder()
+        var chunksReceived = 0
+
+        withTimeout(60_000L) {
+            model.generateContentStream(inputContent).collect { chunk ->
+                val part = chunk.text.orEmpty()
+                if (part.isNotEmpty()) {
+                    accumulatedJson.append(part)
+                    chunksReceived++
+                    if (chunksReceived == 1 || chunksReceived % 4 == 0) {
+                        onProgress("4/4 — Rédaction du verdict IA (${accumulatedJson.length} car.)…")
+                    }
+                }
+            }
+        }
+
+        val jsonText = accumulatedJson.toString().trim()
+        if (jsonText.isBlank()) {
+            Log.e(TAG, "Gemini returned empty stream for lot ${lot.id}")
             throw IllegalStateException("L'agent IA n'a renvoyé aucune réponse pour cette enchère.")
         }
 
-        return parseStudyReportJson(
+        parseStudyReportJson(
             lotId = lot.id,
             jsonText = jsonText,
             evidence = evidence
         )
+    }
+
+    private suspend fun verifyAppCheckToken() {
+        try {
+            withTimeout(15_000L) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    FirebaseAppCheck.getInstance()
+                        .getAppCheckToken(false)
+                        .addOnSuccessListener { token ->
+                            Log.d(TAG, "App Check token acquired (expires=${token.expireTimeMillis}).")
+                            if (cont.isActive) cont.resume(Unit)
+                        }
+                        .addOnFailureListener { error ->
+                            Log.e(TAG, "App Check token failed", error)
+                            if (cont.isActive) cont.resumeWithException(error)
+                        }
+                }
+            }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            Log.e(TAG, "App Check token request timed out after 15s", e)
+            throw IllegalStateException(
+                "Attestation Firebase App Check bloquée (>15 s). Vérifiez que l'émulateur ou le téléphone dispose d'un accès réseau Google.",
+                e
+            )
+        }
     }
 
     private fun buildPrompt(lot: AuctionLot, evidence: ScrapedLotEvidence): String {
@@ -132,58 +185,50 @@ class AuctionAiAnalyst {
         val isVehicle = lot.category == AuctionCategory.VEHICLES ||
             evidence.detectedVin != null ||
             evidence.carfaxUrl != null ||
-            Regex("""(?i)\b(car|truck|suv|sedan|van|pickup|ford|toyota|honda|hyundai|nissan|chevrolet|gmc|dodge|ram|mazda|subaru|bmw|mercedes|audi|volkswagen|kia|jeep|voiture|camion|auto)\b""")
+            Regex("""(?i)\b(car|truck|suv|sedan|van|pickup|ford|toyota|honda|hyundai|nissan|chevrolet|gmc|dodge|ram|mazda|subaru|bmw|mercedes|audi|volkswagen|kia|jeep|chrysler|porsche|voiture|camion|auto)\b""")
                 .containsMatchIn("${lot.title} ${lot.description}")
 
         return buildString {
-            appendLine("=== DONNÉES DE L'ENCHÈRE CANADIENNE ===")
+            appendLine("=== ENCHÈRE CANADIENNE ===")
             appendLine("Titre : ${lot.title}")
             appendLine("Source : ${lot.sourceId.displayName} (${lot.auctionHouse})")
             appendLine("Province / Ville : ${lot.province.displayNameFr} (${lot.province.code}) — ${lot.city}")
-            appendLine("Catégorie : ${lot.category.displayNameFr} (Véhicule détecté : ${if (isVehicle) "OUI" else "NON"})")
-            appendLine("Mise actuelle : ${if (lot.currentBid != null) String.format(Locale.US, "%.2f $ %s", lot.currentBid, lot.currency) else "Non indiquée / début d'enchère"}")
-            appendLine("Nombre d'enchères : ${lot.bidCount}")
-            appendLine("Clôture : ${lot.closingLabel.ifBlank { "Non précisée" }}")
-            appendLine("Frais d'acheteur estimés : ${lot.buyersPremiumPercent}%${evidence.pageBuyersPremiumHint?.let { " (trouvé sur page : $it)" } ?: ""}")
-            appendLine("Taxes provinciales (${lot.province.taxLabel}) : ${String.format(Locale.US, "%.2f", breakdown.taxAmount)} $ CAD")
+            appendLine("Catégorie : ${lot.category.displayNameFr} | Véhicule : ${if (isVehicle) "OUI" else "NON"}")
+            appendLine("Mise actuelle : ${if (lot.currentBid != null) String.format(Locale.US, "%.2f $ %s", lot.currentBid, lot.currency) else "Non indiquée"}")
+            appendLine("Enchères : ${lot.bidCount} | Clôture : ${lot.closingLabel.ifBlank { "Non précisée" }}")
+            appendLine("Frais d'acheteur : ${lot.buyersPremiumPercent}%${evidence.pageBuyersPremiumHint?.let { " (page : $it)" } ?: ""}")
+            appendLine("Taxes (${lot.province.taxLabel}) : ${String.format(Locale.US, "%.2f", breakdown.taxAmount)} $ CAD")
             if (currentBid > 0.0) {
-                appendLine("COÛT RÉEL TOTAL ACTUEL (mise + frais + taxes) : ${String.format(Locale.US, "%.2f", breakdown.totalCost)} $ CAD")
+                appendLine("COÛT TOTAL ACTUEL ESTIMÉ : ${String.format(Locale.US, "%.2f", breakdown.totalCost)} $ CAD")
             }
-            appendLine("URL officielle : ${lot.auctionUrl}")
+            appendLine("Description : ${lot.description.take(400).ifBlank { "(Courte)" }}")
             appendLine()
 
-            appendLine("=== DESCRIPTION INITIALE DU FLUX ===")
-            appendLine(lot.description.ifBlank { "(Aucune description courte dans le flux)" })
-            appendLine()
-
-            appendLine("=== DONNÉES EXTRAITES EN DIRECT DE LA PAGE OFFICIELLE ===")
-            appendLine("Page lue en direct : ${if (evidence.scrapedSuccessfully) "OUI" else "NON (site protégé ou hors ligne — analyser avec prudence)"}")
-            if (evidence.pageTitle.isNotBlank()) appendLine("Titre page web : ${evidence.pageTitle}")
-            evidence.retailPriceHint?.let { appendLine("Prix de détail / PDSF mentionné : $it") }
-            evidence.detectedVin?.let { appendLine("NIV (VIN) détecté : $it") }
-            evidence.detectedMileage?.let { appendLine("Kilométrage détecté : $it") }
-            evidence.inspectionReportUrl?.let { appendLine("Lien rapport d'inspection trouvé : $it") }
-
+            appendLine("=== PAGE OFFICIELLE ===")
+            appendLine("Lue en direct : ${if (evidence.scrapedSuccessfully) "OUI" else "NON"}")
+            evidence.retailPriceHint?.let { appendLine("Prix détail / PDSF : $it") }
+            evidence.detectedVin?.let { appendLine("NIV (VIN) : $it") }
+            evidence.detectedMileage?.let { appendLine("Kilométrage : $it") }
+            evidence.inspectionReportUrl?.let { appendLine("Rapport inspection : $it") }
             if (evidence.fullListingText.isNotBlank()) {
-                appendLine("Texte détaillé de l'annonce :")
-                appendLine(evidence.fullListingText)
+                appendLine(evidence.fullListingText.take(1500))
             }
-            appendLine()
 
-            if (isVehicle || evidence.carfaxUrl != null) {
+            if (isVehicle || evidence.carfaxUrl != null || evidence.carfaxReadDirectly) {
+                appendLine()
                 appendLine("=== RAPPORT CARFAX / HISTORIQUE VÉHICULE ===")
-                appendLine("Lien CARFAX trouvé sur l'annonce : ${evidence.carfaxUrl ?: "Aucun lien CARFAX public détecté"}")
+                appendLine("Lien CARFAX : ${evidence.carfaxUrl ?: "Aucun lien public trouvé"}")
+                appendLine("Rapport lu directement : ${if (evidence.carfaxReadDirectly) "OUI (${evidence.carfaxSourceMethod ?: "Direct"})" else "NON"}")
                 when {
                     !evidence.carfaxReportText.isNullOrBlank() -> {
-                        appendLine("Contenu extrait du rapport CARFAX :")
-                        appendLine(evidence.carfaxReportText)
+                        appendLine("CONTENU COMPLET DU RAPPORT CARFAX LU EN DIRECT :")
+                        appendLine(evidence.carfaxReportText.take(5_500))
                     }
-                    !evidence.carfaxAccessNote.isNullOrBlank() -> {
-                        appendLine("Note d'accès CARFAX : ${evidence.carfaxAccessNote}")
+                    evidence.carfaxPdfBytes != null -> {
+                        appendLine("Le rapport CARFAX / d'inspection officiel au format PDF est joint directement à ce message — lis-le intégralement.")
                     }
-                    else -> {
-                        appendLine("Aucun rapport CARFAX n'était joint publiquement à la page du lot.")
-                    }
+                    !evidence.carfaxAccessNote.isNullOrBlank() -> appendLine(evidence.carfaxAccessNote)
+                    else -> appendLine("Aucun rapport CARFAX public joint à l'annonce.")
                 }
             }
         }
@@ -228,6 +273,7 @@ class AuctionAiAnalyst {
                 detectedVin = evidence.detectedVin,
                 detectedMileage = evidence.detectedMileage,
                 scrapedOfficialPage = evidence.scrapedSuccessfully,
+                carfaxReadDirectly = evidence.carfaxReadDirectly,
                 pros = readStringList("pros"),
                 redFlags = readStringList("redFlags"),
                 verificationChecklist = readStringList("verificationChecklist")

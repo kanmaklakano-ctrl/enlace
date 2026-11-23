@@ -453,6 +453,25 @@ private fun SuccessStudyContent(
                         )
                     }
 
+                    if (report.carfaxReadDirectly) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Verified,
+                                contentDescription = null,
+                                tint = LiveEmerald,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "Rapport CARFAX officiel lu et analysé par l'IA",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = LiveEmerald
+                            )
+                        }
+                    }
+
                     if (!report.detectedVin.isNullOrBlank() || !report.detectedMileage.isNullOrBlank()) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
