@@ -10,15 +10,13 @@ import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
-import com.google.firebase.appcheck.FirebaseAppCheck
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.Locale
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 private const val TAG = "AuctionAiAnalyst"
 
@@ -102,13 +100,10 @@ class AuctionAiAnalyst {
         photoBitmap: Bitmap?,
         onProgress: (String) -> Unit = {}
     ): AuctionStudyReport = withContext(Dispatchers.IO) {
-        onProgress("3/4 — Vérification App Check…")
-        verifyAppCheckToken()
-
         val aiStage = when {
-            evidence.carfaxReadDirectly -> "4/4 — Analyse IA du CARFAX, du NIV Canada et du prix…"
-            evidence.vinLookup != null -> "4/4 — Analyse IA du dossier NIV, rappels Canada & prix…"
-            else -> "4/4 — Connexion à Gemini (analyse prix Canada & détails)…"
+            evidence.carfaxReadDirectly -> "3/3 — Analyse IA du CARFAX, du NIV Canada et du prix…"
+            evidence.vinLookup != null -> "3/3 — Analyse IA du dossier NIV, rappels Canada & prix…"
+            else -> "3/3 — Connexion à Gemini (analyse prix Canada & détails)…"
         }
         onProgress(aiStage)
         val promptText = buildPrompt(lot, evidence)
@@ -127,23 +122,35 @@ class AuctionAiAnalyst {
         val accumulatedJson = StringBuilder()
         var chunksReceived = 0
 
-        withTimeout(60_000L) {
-            model.generateContentStream(inputContent).collect { chunk ->
-                val part = chunk.text.orEmpty()
-                if (part.isNotEmpty()) {
-                    accumulatedJson.append(part)
-                    chunksReceived++
-                    if (chunksReceived == 1 || chunksReceived % 4 == 0) {
-                        onProgress("4/4 — Rédaction du verdict IA (${accumulatedJson.length} car.)…")
+        try {
+            // Let Firebase.ai's native AppCheckHeaderProvider manage App Check tokens
+            // without hard-aborting client-side if attestation returns a non-fatal error.
+            withTimeout(60_000L) {
+                model.generateContentStream(inputContent).collect { chunk ->
+                    val part = chunk.text.orEmpty()
+                    if (part.isNotEmpty()) {
+                        accumulatedJson.append(part)
+                        chunksReceived++
+                        if (chunksReceived == 1 || chunksReceived % 4 == 0) {
+                            onProgress("3/3 — Rédaction du verdict IA (${accumulatedJson.length} car.)…")
+                        }
                     }
                 }
             }
+        } catch (e: TimeoutCancellationException) {
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Gemini stream failed ($appCheckInitSummary)", e)
+            val baseMessage = e.localizedMessage?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+            throw IllegalStateException("$baseMessage\n[$appCheckInitSummary]", e)
         }
 
         val jsonText = accumulatedJson.toString().trim()
         if (jsonText.isBlank()) {
             Log.e(TAG, "Gemini returned empty stream for lot ${lot.id}")
-            throw IllegalStateException("L'agent IA n'a renvoyé aucune réponse pour cette enchère.")
+            throw IllegalStateException("L'agent IA n'a renvoyé aucune réponse pour cette enchère.\n[$appCheckInitSummary]")
         }
 
         parseStudyReportJson(
@@ -151,31 +158,6 @@ class AuctionAiAnalyst {
             jsonText = jsonText,
             evidence = evidence
         )
-    }
-
-    private suspend fun verifyAppCheckToken() {
-        try {
-            withTimeout(15_000L) {
-                suspendCancellableCoroutine<Unit> { cont ->
-                    FirebaseAppCheck.getInstance()
-                        .getAppCheckToken(false)
-                        .addOnSuccessListener { token ->
-                            Log.d(TAG, "App Check token acquired (expires=${token.expireTimeMillis}).")
-                            if (cont.isActive) cont.resume(Unit)
-                        }
-                        .addOnFailureListener { error ->
-                            Log.e(TAG, "App Check token failed", error)
-                            if (cont.isActive) cont.resumeWithException(error)
-                        }
-                }
-            }
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            Log.e(TAG, "App Check token request timed out after 15s", e)
-            throw IllegalStateException(
-                "Attestation Firebase App Check bloquée (>15 s). Vérifiez que l'émulateur ou le téléphone dispose d'un accès réseau Google.",
-                e
-            )
-        }
     }
 
     private fun buildPrompt(lot: AuctionLot, evidence: ScrapedLotEvidence): String {

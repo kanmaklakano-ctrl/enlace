@@ -17,13 +17,20 @@ private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
 private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
+@Volatile
+var appCheckInitSummary: String =
+    "v${BuildConfig.VERSION_NAME} (#${BuildConfig.VERSION_CODE}) • ${BuildConfig.BUILD_TYPE} • non initialisé"
+    private set
+
 fun configureAppCheck(context: Context, intent: Intent?) {
+    val buildPrefix = "v${BuildConfig.VERSION_NAME} (#${BuildConfig.VERSION_CODE}) • ${BuildConfig.BUILD_TYPE}"
     try {
         // 1. Ensure FirebaseApp is initialized
         val firebaseApp = FirebaseApp.getApps(context).firstOrNull()
             ?: FirebaseApp.initializeApp(context)
 
         if (firebaseApp == null) {
+            appCheckInitSummary = "$buildPrefix • FirebaseApp absent (google-services.json manquant)"
             Log.e(TAG, "FirebaseApp could not be initialized (missing google-services.json).")
             return
         }
@@ -51,6 +58,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
             FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
                 DebugAppCheckProviderFactory.getInstance()
             )
+            appCheckInitSummary = "$buildPrefix • DebugProvider (token=${if (!debugToken.isNullOrEmpty()) "oui" else "non"})"
             Log.d(TAG, "DebugAppCheckProviderFactory installed.")
         } else {
             // 3. Release: Look up recaptcha_site_key safely without throwing Resources.NotFoundException
@@ -65,15 +73,19 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                     FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
                         RecaptchaAppCheckProviderFactory.getInstance(siteKey)
                     )
+                    appCheckInitSummary = "$buildPrefix • reCAPTCHA (${siteKey.take(8)}…)"
                     Log.d(TAG, "RecaptchaAppCheckProviderFactory installed.")
                 } else {
+                    appCheckInitSummary = "$buildPrefix • recaptcha_site_key vide"
                     Log.e(TAG, "recaptcha_site_key resource string is blank.")
                 }
             } else {
+                appCheckInitSummary = "$buildPrefix • recaptcha_site_key introuvable"
                 Log.e(TAG, "recaptcha_site_key string resource not found in package.")
             }
         }
     } catch (e: Exception) {
+        appCheckInitSummary = "$buildPrefix • erreur init (${e.javaClass.simpleName})"
         Log.e(TAG, "Failed to initialize Firebase App Check", e)
     }
 }

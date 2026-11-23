@@ -450,7 +450,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
 
         activeStudyJobs[lot.id]?.cancel()
         activeStudyJobs[lot.id] = viewModelScope.launch {
-            var lastStage = "1/4 — Lecture de la page officielle & recherche CARFAX / NIV…"
+            var lastStage = "1/3 — Lecture de la page officielle & recherche CARFAX / NIV…"
             _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
             try {
                 val evidenceDeferred = async {
@@ -468,14 +468,14 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
                 val isVehicle = isLikelyVehicleLot(lot, evidence)
                 val reportUrlToRead = evidence.carfaxUrl ?: evidence.inspectionReportUrl
 
-                // Step 2/4: Run official Canadian/NA VIN & Recall lookup IN PARALLEL with CARFAX reading
+                // Step 2/3: Run official Canadian/NA VIN & Recall lookup IN PARALLEL with CARFAX reading
                 // (especially valuable when NO CARFAX report exists on the listing!)
                 if (!reportUrlToRead.isNullOrBlank() || isVehicle) {
                     lastStage = when {
-                        evidence.carfaxUrl != null -> "2/4 — Lecture CARFAX + décodage NIV & rappels Canada…"
-                        evidence.inspectionReportUrl != null -> "2/4 — Lecture rapport d'inspection & dossier NIV…"
-                        evidence.detectedVin != null -> "2/4 — Pas de CARFAX : interrogation NIV officiel & rappels Canada…"
-                        else -> "2/4 — Vérification des rappels & fiabilité véhicule au Canada…"
+                        evidence.carfaxUrl != null -> "2/3 — Lecture CARFAX + décodage NIV & rappels Canada…"
+                        evidence.inspectionReportUrl != null -> "2/3 — Lecture rapport d'inspection & dossier NIV…"
+                        evidence.detectedVin != null -> "2/3 — Pas de CARFAX : interrogation NIV officiel & rappels Canada…"
+                        else -> "2/3 — Vérification des rappels & fiabilité véhicule au Canada…"
                     }
                     _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
 
@@ -583,7 +583,7 @@ class EncanViewModel(application: Application) : AndroidViewModel(application) {
 
         activeStudyJobs[lot.id]?.cancel()
         activeStudyJobs[lot.id] = viewModelScope.launch {
-            var lastStage = "2/4 — Rapport CARFAX capturé ! Préparation de l'analyse IA…"
+            var lastStage = "2/3 — Rapport CARFAX capturé ! Préparation de l'analyse IA…"
             _studyStates.update { it + (lot.id to AuctionStudyUiState.Loading(lastStage)) }
             try {
                 val baseEvidence = scrapedEvidenceCache[lot.id]
