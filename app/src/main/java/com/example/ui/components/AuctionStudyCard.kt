@@ -254,6 +254,15 @@ private fun ErrorStudyContent(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        val isAppCheckError = message.contains("App Check", ignoreCase = true) ||
+            message.contains("attestation", ignoreCase = true) ||
+            message.contains("403", ignoreCase = true)
+        if (isAppCheckError) {
+            AppCheckDeviceSetupCard(
+                compact = true,
+                onActivated = onRetry
+            )
+        }
         OutlinedButton(
             onClick = onRetry,
             shape = RoundedCornerShape(12.dp),

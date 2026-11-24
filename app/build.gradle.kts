@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.encanlive.qxmkvr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 12
-    versionName = "1.8"
+    versionCode = 13
+    versionName = "1.9"
 
     val githubUpdateRepo = (project.findProperty("ENCAN_GITHUB_REPO") as String?)
       ?.trim()

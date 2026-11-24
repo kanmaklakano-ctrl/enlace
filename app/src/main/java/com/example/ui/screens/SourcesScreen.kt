@@ -227,6 +227,10 @@ fun SourcesScreen(
             }
         }
 
+        item(key = "app_check_device_setup_item") {
+            com.example.ui.components.AppCheckDeviceSetupCard(compact = false)
+        }
+
         item(key = "app_update_card_item") {
             AppUpdateCard(
                 status = appUpdateState.status,
